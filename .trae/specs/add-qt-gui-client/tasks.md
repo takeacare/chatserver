@@ -1,0 +1,51 @@
+# Tasks
+
+- [ ] Task 1: 安装缺失的 Qt6 Quick/QML 开发依赖
+  - [ ] `sudo apt-get install -y qt6-declarative-dev`
+  - [ ] 验证 `/usr/lib/x86_64-linux-gnu/cmake/` 下出现 `Qt6Qml / Qt6Quick / Qt6QuickWidgets` 配置
+- [ ] Task 2: 搭建 qtclient 构建骨架并接入根构建
+  - [ ] 根 `CMakeLists.txt`：`cmake_minimum_required` 3.0 → 3.16
+  - [ ] `src/CMakeLists.txt` 追加 `add_subdirectory(qtclient)`
+  - [ ] 新建 `src/qtclient/CMakeLists.txt`：`find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickWidgets)`，开启 AUTOMOC/AUTORCC，目标 C++17，输出 ChatGui
+  - [ ] 新建 `src/qtclient/main.cpp`（最小 QApplication 空窗口），执行 `./autobuild.sh` 全量编译通过，产出 `bin/ChatGui`
+- [ ] Task 3: 实现 ChatClient 通信类
+  - [ ] `chatclient.h/.cpp`：QTcpSocket 连接、复用 `encodeMessage()` 加帧发送
+  - [ ] 缓冲累积 + 4 字节网络序长度前缀拆帧（半包/粘包），超 `MAX_MSG_LEN` 断开
+  - [ ] 按 msgid 发射信号：`loginResult / regResult / chatMessage / connected / disconnected / socketError`
+- [ ] Task 4: 实现登录/注册对话框（LoginDialog）
+  - [ ] 服务器地址/端口配置组（默认 127.0.0.1:6000）
+  - [ ] QTabWidget 登录/注册两页，输入校验（QIntValidator、非空密码）
+  - [ ] 登录成功进主窗口；errno=1/2 分别提示；注册成功提示分配的 userID；等待期间禁用按钮
+- [ ] Task 5: 实现主窗口（MainWindow）
+  - [ ] QSplitter + 左侧 QTabWidget（好友/群组 QListWidget，在线状态标识）+ 顶部操作按钮（添加好友/创建群/加入群/刷新列表）
+  - [ ] 右侧会话标题 + 消息视图占位 + 输入行（QLineEdit + 发送按钮）+ 状态栏
+  - [ ] 解析 LOGIN_ACK 的 friends/groups 嵌套 JSON 字符串填充列表
+  - [ ] 各操作输入对话框与反馈提示；非法输入不发包
+- [ ] Task 6: 实现 QML 消息视图与 MessageModel
+  - [ ] `messagemodel.h/.cpp`：QAbstractListModel（senderId/senderName/text/time/mine/offline 角色）
+  - [ ] `qml/MessageView.qml`：气泡 delegate（本人靠右/对方靠左）、新消息自动滚底
+  - [ ] `resources.qrc` 打包 QML；QQuickWidget 加载 `qrc:///qml/MessageView.qml` 并以 context property 注入模型
+- [ ] Task 7: 实现会话管理与消息路由
+  - [ ] `conversation.h`：会话结构（peerId/isGroup/title/model），按键 `u:<id>` / `g:<id>` 索引
+  - [ ] 私聊/群聊发送（组 ONE_CHAT_MSG / GROUP_CHAT_MSG，含 time 字段）
+  - [ ] 收到 chatMessage 按 toid→sender / groupid 路由；陌生人建临时会话条目
+  - [ ] 离线消息逐条解析路由并标记 [离线]
+  - [ ] 刷新列表：先读 `chatservice.cpp` loginout 确认不关闭连接，然后同连接 LOGINOUT+LOGIN 静默重登重建列表（若会关连接则改断开重连方案）
+  - [ ] 注销返回登录对话框；断线提示并返回登录
+- [ ] Task 8: 资源与文档
+  - [ ] resources.qrc 补占位图标（用 qrc 内嵌简单图形或 Qt 标准图标，不引入外部图片文件）
+  - [ ] 编写 `docs/qtgui-layout.md` 布局配置说明（用户明确要求：模块布局、控件层级、响应式策略、信号槽连接关系、集成编译说明）
+- [ ] Task 9: 编译与端到端验证
+  - [ ] `./autobuild.sh` 全量编译零错误（ChatServer/ChatClient/ChatGui 三目标，server/client 回归）
+  - [ ] 启动 MySQL/Redis/ChatServer；`QT_QPA_PLATFORM=offscreen` 冒烟启动 ChatGui 不崩溃
+  - [ ] 用 python 协议脚本做服务端回归（注册/登录/私聊/群聊/离线）确认服务端行为未受构建改动影响
+  - [ ] 输出人工验证指引（真实桌面下 GUI 注册→登录→聊天流程）供用户最终确认
+
+# Task Dependencies
+- Task 2 依赖 Task 1（Qt6 Quick CMake 配置）
+- Task 3 依赖 Task 2
+- Task 4、Task 5 依赖 Task 3（可并行）
+- Task 6 依赖 Task 2（可与 4/5 并行开发，集成依赖 5）
+- Task 7 依赖 Task 5 + Task 6
+- Task 8 依赖 Task 7（文档需与最终实现一致）
+- Task 9 依赖 Task 8
