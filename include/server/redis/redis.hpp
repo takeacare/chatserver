@@ -3,6 +3,7 @@
 
 #include <hiredis/hiredis.h>
 #include <thread>
+#include <mutex>
 #include <functional>
 using namespace std;
 
@@ -43,6 +44,10 @@ private:
 
     // 回调操作，收到订阅的消息，给service层上报
     function<void(int, string)> _notify_message_handler;
+
+    // hiredis的上下文不是线程安全的，发布与订阅分别加锁
+    mutex _publishMutex;
+    mutex _subscribeMutex;
 };
 
 #endif

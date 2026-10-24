@@ -13,12 +13,14 @@ public:
     MySQL();
     // 释放数据库连接资源
     ~MySQL();
-    // 连接数据库
+    // 检查借到的连接是否可用
     bool connect();
     // 更新操作
-    bool update(string sql);
+    bool update(const string &sql);
     // 查询操作
-    MYSQL_RES *query(string sql);
+    MYSQL_RES *query(const string &sql);
+    // 转义字符串，防止SQL注入与引号破坏
+    string escape(const string &raw);
     // 获取连接
     MYSQL* getConnection();
 private:

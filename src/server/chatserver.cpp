@@ -1,7 +1,9 @@
 #include "chatserver.hpp"
 #include "json.hpp"
 #include "chatservice.hpp"
+#include "public.hpp"
 
+#include <muduo/base/Logging.h>
 #include <iostream>
 #include <functional>
 #include <string>
@@ -47,16 +49,57 @@ void ChatServer::onMessage(const TcpConnectionPtr &conn,
                            Buffer *buffer,
                            Timestamp time)
 {
-    string buf = buffer->retrieveAllAsString();
+    // 按「4字节网络序长度 + JSON负载」循环解帧，处理粘包与拆包
+    while (buffer->readableBytes() >= 4)
+    {
+        uint32_t netLen = 0;
+        memcpy(&netLen, buffer->peek(), 4);
+        uint32_t len = ntohl(netLen);
 
-    // 测试，添加json打印代码
-    cout << buf << endl;
+        if (len == 0 || len > MAX_MSG_LEN)
+        {
+            LOG_ERROR << "invalid message length: " << len << ", close connection";
+            conn->shutdown();
+            return;
+        }
 
-    // 数据的反序列化
-    json js = json::parse(buf);
-    // 达到的目的：完全解耦网络模块的代码和业务模块的代码
-    // 通过js["msgid"] 获取=》业务handler=》conn  js  time
-    auto msgHandler = ChatService::instance()->getHandler(js["msgid"].get<int>());
-    // 回调消息绑定好的事件处理器，来执行相应的业务处理
-    msgHandler(conn, js, time);
+        // 不足一整帧，剩余数据留在Buffer中等待下一次回调
+        if (buffer->readableBytes() < 4 + len)
+        {
+            return;
+        }
+
+        buffer->retrieve(4);
+        string payload = buffer->retrieveAsString(len);
+
+        json js;
+        try
+        {
+            js = json::parse(payload);
+        }
+        catch (const exception &e)
+        {
+            LOG_ERROR << "json parse failed: " << e.what() << ", payload: " << payload;
+            continue;
+        }
+
+        cout << payload << endl;
+
+        // 数据的反序列化
+        // 达到的目的：完全解耦网络模块的代码和业务模块的代码
+        // 通过js["msgid"] 获取=》业务handler=》conn  js  time
+        auto msgHandler = ChatService::instance()->getHandler(js["msgid"].get<int>());
+        // 回调消息绑定好的事件处理器，来执行相应的业务处理
+        // 业务处理中的异常（如字段缺失、类型错误）不能把整个服务端线程带崩
+        try
+        {
+            msgHandler(conn, js, time);
+        }
+        catch (const exception &e)
+        {
+            LOG_ERROR << "handle message failed: " << e.what() << ", payload: " << payload;
+            conn->shutdown();
+            return;
+        }
+    }
 }

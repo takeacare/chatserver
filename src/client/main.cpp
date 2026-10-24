@@ -5,6 +5,8 @@
 #include <vector>
 #include <chrono>
 #include <ctime>
+#include <cstring>
+#include <cerrno>
 #include <unordered_map>
 #include <functional>
 using namespace std;
@@ -46,6 +48,36 @@ string getCurrentTime();
 void mainMenu(int);
 // 显示当前登录成功用户的基本信息
 void showCurrentUserData();
+
+// 循环发送直到数据全部写完，处理短写与EINTR
+static bool sendAll(int fd, const std::string &data)
+{
+    size_t sent = 0;
+    while (sent < data.size())
+    {
+        ssize_t n = send(fd, data.data() + sent, data.size() - sent, 0);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0)
+        {
+            return false;
+        }
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+// 按分帧协议发送一条JSON
+static bool sendFrame(int fd, const std::string &json)
+{
+    return sendAll(fd, encodeMessage(json));
+}
 
 // 聊天客户端程序实现，main线程用作发送线程，子线程用作接收线程
 int main(int argc, char **argv)
@@ -125,8 +157,7 @@ int main(int argc, char **argv)
 
             g_isLoginSuccess = false;
 
-            int len = send(clientfd, request.c_str(), strlen(request.c_str()) + 1, 0);
-            if (len == -1)
+            if (!sendFrame(clientfd, request))
             {
                 cerr << "send login msg error:" << request << endl;
             }
@@ -156,8 +187,7 @@ int main(int argc, char **argv)
             js["password"] = pwd;
             string request = js.dump();
 
-            int len = send(clientfd, request.c_str(), strlen(request.c_str()) + 1, 0);
-            if (len == -1)
+            if (!sendFrame(clientfd, request))
             {
                 cerr << "send reg msg error:" << request << endl;
             }
@@ -286,45 +316,94 @@ void doLoginResponse(json &responsejs)
 // 子线程 - 接收线程
 void readTaskHandler(int clientfd)
 {
+    string recvBuf;
+    char chunk[4096];
+
     for (;;)
     {
-        char buffer[1024] = {0};
-        int len = recv(clientfd, buffer, 1024, 0);  // 阻塞了
-        if (-1 == len || 0 == len)
+        ssize_t len = recv(clientfd, chunk, sizeof(chunk), 0);  // 阻塞了
+        if (0 == len)
         {
+            cerr << "server closed connection" << endl;
+            close(clientfd);
+            exit(-1);
+        }
+        if (len < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            cerr << "recv error: " << strerror(errno) << endl;
             close(clientfd);
             exit(-1);
         }
 
-        // 接收ChatServer转发的数据，反序列化生成json数据对象
-        json js = json::parse(buffer);
-        int msgtype = js["msgid"].get<int>();
-        if (ONE_CHAT_MSG == msgtype)
-        {
-            cout << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
-                 << " said: " << js["msg"].get<string>() << endl;
-            continue;
-        }
+        recvBuf.append(chunk, len);
 
-        if (GROUP_CHAT_MSG == msgtype)
+        // 按「4字节网络序长度 + JSON负载」循环解帧
+        while (recvBuf.size() >= 4)
         {
-            cout << "群消息[" << js["groupid"] << "]:" << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
-                 << " said: " << js["msg"].get<string>() << endl;
-            continue;
-        }
+            uint32_t netLen = 0;
+            memcpy(&netLen, recvBuf.data(), 4);
+            uint32_t msgLen = ntohl(netLen);
 
-        if (LOGIN_MSG_ACK == msgtype)
-        {
-            doLoginResponse(js); // 处理登录响应的业务逻辑
-            sem_post(&rwsem);    // 通知主线程，登录结果处理完成
-            continue;
-        }
+            if (0 == msgLen || msgLen > MAX_MSG_LEN)
+            {
+                cerr << "invalid message length: " << msgLen << endl;
+                close(clientfd);
+                exit(-1);
+            }
 
-        if (REG_MSG_ACK == msgtype)
-        {
-            doRegResponse(js);
-            sem_post(&rwsem);    // 通知主线程，注册结果处理完成
-            continue;
+            // 不足一整帧，等下一次recv
+            if (recvBuf.size() < 4 + msgLen)
+            {
+                break;
+            }
+
+            string payload = recvBuf.substr(4, msgLen);
+            recvBuf.erase(0, 4 + msgLen);
+
+            // 接收ChatServer转发的数据，反序列化生成json数据对象
+            json js;
+            try
+            {
+                js = json::parse(payload);
+            }
+            catch (const exception &e)
+            {
+                cerr << "json parse error: " << e.what() << endl;
+                continue;
+            }
+
+            int msgtype = js["msgid"].get<int>();
+            if (ONE_CHAT_MSG == msgtype)
+            {
+                cout << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                     << " said: " << js["msg"].get<string>() << endl;
+                continue;
+            }
+
+            if (GROUP_CHAT_MSG == msgtype)
+            {
+                cout << "群消息[" << js["groupid"] << "]:" << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                     << " said: " << js["msg"].get<string>() << endl;
+                continue;
+            }
+
+            if (LOGIN_MSG_ACK == msgtype)
+            {
+                doLoginResponse(js); // 处理登录响应的业务逻辑
+                sem_post(&rwsem);    // 通知主线程，登录结果处理完成
+                continue;
+            }
+
+            if (REG_MSG_ACK == msgtype)
+            {
+                doRegResponse(js);
+                sem_post(&rwsem);    // 通知主线程，注册结果处理完成
+                continue;
+            }
         }
     }
 }
@@ -445,8 +524,7 @@ void addfriend(int clientfd, string str)
     js["friendid"] = friendid;
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send addfriend msg error -> " << buffer << endl;
     }
@@ -473,8 +551,7 @@ void chat(int clientfd, string str)
     js["time"] = getCurrentTime();
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send chat msg error -> " << buffer << endl;
     }
@@ -499,8 +576,7 @@ void creategroup(int clientfd, string str)
     js["groupdesc"] = groupdesc;
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send creategroup msg error -> " << buffer << endl;
     }
@@ -515,8 +591,7 @@ void addgroup(int clientfd, string str)
     js["groupid"] = groupid;
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send addgroup msg error -> " << buffer << endl;
     }
@@ -543,8 +618,7 @@ void groupchat(int clientfd, string str)
     js["time"] = getCurrentTime();
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send groupchat msg error -> " << buffer << endl;
     }
@@ -557,8 +631,7 @@ void loginout(int clientfd, string)
     js["id"] = g_currentUser.getId();
     string buffer = js.dump();
 
-    int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
-    if (-1 == len)
+    if (!sendFrame(clientfd, buffer))
     {
         cerr << "send loginout msg error -> " << buffer << endl;
     }

@@ -1,5 +1,6 @@
 #include "chatserver.hpp"
 #include "chatservice.hpp"
+#include "connectionpool.h"
 #include <iostream>
 #include <signal.h>
 using namespace std;
@@ -24,6 +25,9 @@ int main(int argc, char **argv)
     uint16_t port = atoi(argv[2]);
 
     signal(SIGINT, resetHandler);
+
+    // 初始化MySQL连接池
+    ConnectionPool::instance().init("127.0.0.1", 3306, "root", "123456", "chat", 8);
 
     EventLoop loop;
     InetAddress addr(ip, port);
