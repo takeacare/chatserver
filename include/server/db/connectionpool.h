@@ -36,7 +36,7 @@ private:
     string _host = "127.0.0.1";
     int _port = 3306;
     string _user = "root";
-    string _pwd = "123456";
+    string _pwd; // 凭据由配置文件提供，禁止硬编码
     string _db = "chat";
     size_t _maxSize = 8;
     size_t _created = 0;

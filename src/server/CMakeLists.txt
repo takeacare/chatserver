@@ -6,5 +6,9 @@ aux_source_directory(./redis REDIS_LIST)
 
 # 指定生成可执行文件
 add_executable(ChatServer ${SRC_LIST} ${DB_LIST} ${MODEL_LIST} ${REDIS_LIST})
+
+# 密码哈希需要 OpenSSL
+find_package(OpenSSL REQUIRED)
+
 # 指定可执行文件链接时需要依赖的库文件
-target_link_libraries(ChatServer muduo_net muduo_base mysqlclient hiredis pthread)
+target_link_libraries(ChatServer muduo_net muduo_base mysqlclient hiredis pthread OpenSSL::Crypto)

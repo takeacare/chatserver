@@ -66,3 +66,6 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# 运行配置（含数据库凭据，禁止入库）
+config/server.conf

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <ctime>
 #include <cstring>
+#include <cctype>
 #include <cerrno>
 #include <unordered_map>
 #include <functional>
@@ -141,17 +142,16 @@ int main(int argc, char **argv)
         {
         case 1: // login业务
         {
-            int id = 0;
+            char email[120] = {0};
             char pwd[50] = {0};
-            cout << "userid:";
-            cin >> id;
-            cin.get(); // 读掉缓冲区残留的回车
+            cout << "email:";
+            cin.getline(email, sizeof(email));
             cout << "userpassword:";
             cin.getline(pwd, 50);
 
             json js;
             js["msgid"] = LOGIN_MSG;
-            js["id"] = id;
+            js["email"] = email;
             js["password"] = pwd;
             string request = js.dump();
 
@@ -175,15 +175,19 @@ int main(int argc, char **argv)
         case 2: // register业务
         {
             char name[50] = {0};
+            char email[120] = {0};
             char pwd[50] = {0};
             cout << "username:";
             cin.getline(name, 50);
+            cout << "email:";
+            cin.getline(email, sizeof(email));
             cout << "userpassword:";
             cin.getline(pwd, 50);
 
             json js;
             js["msgid"] = REG_MSG;
             js["name"] = name;
+            js["email"] = email;
             js["password"] = pwd;
             string request = js.dump();
 
@@ -211,14 +215,21 @@ int main(int argc, char **argv)
 // 处理注册的响应逻辑
 void doRegResponse(json &responsejs)
 {
-    if (0 != responsejs["errno"].get<int>()) // 注册失败
+    if (0 != responsejs.value("errno", 1)) // 注册失败
     {
-        cerr << "name is already exist, register error!" << endl;
+        int errno_ = responsejs.value("errno", 1);
+        if (errno_ == 1)
+        {
+            cerr << "username or email is already exist, register error!" << endl;
+        }
+        else
+        {
+            cerr << "register error: " << responsejs.value("errmsg", string("invalid input")) << endl;
+        }
     }
     else // 注册成功
     {
-        cout << "name register success, userid is " << responsejs["id"]
-                << ", do not forget it!" << endl;
+        cout << "register success, login with email " << responsejs.value("email", string()) << endl;
     }
 }
 
@@ -227,14 +238,15 @@ void doLoginResponse(json &responsejs)
 {
     if (0 != responsejs["errno"].get<int>()) // 登录失败
     {
-        cerr << responsejs["errmsg"] << endl;
+        cerr << responsejs.value("errmsg", string("login failed")) << endl;
         g_isLoginSuccess = false;
     }
     else // 登录成功
     {
-        // 记录当前用户的id和name
+        // 记录当前用户的id和name、邮箱
         g_currentUser.setId(responsejs["id"].get<int>());
         g_currentUser.setName(responsejs["name"]);
+        g_currentUser.setEmail(responsejs.value("email", string()));
 
         // 记录当前用户的好友列表信息
         if (responsejs.contains("friends"))
@@ -249,6 +261,7 @@ void doLoginResponse(json &responsejs)
                 User user;
                 user.setId(js["id"].get<int>());
                 user.setName(js["name"]);
+                user.setEmail(js.value("email", string()));
                 user.setState(js["state"]);
                 g_currentUserFriendList.push_back(user);
             }
@@ -295,15 +308,15 @@ void doLoginResponse(json &responsejs)
             for (string &str : vec)
             {
                 json js = json::parse(str);
-                // time + [id] + name + " said: " + xxx
+                // time + name + " said: " + xxx
                 if (ONE_CHAT_MSG == js["msgid"].get<int>())
                 {
-                    cout << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                    cout << js["time"].get<string>() << " " << js["name"].get<string>()
                             << " said: " << js["msg"].get<string>() << endl;
                 }
                 else
                 {
-                    cout << "群消息[" << js["groupid"] << "]:" << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                    cout << "群消息: " << js["time"].get<string>() << " " << js["name"].get<string>()
                             << " said: " << js["msg"].get<string>() << endl;
                 }
             }
@@ -311,6 +324,84 @@ void doLoginResponse(json &responsejs)
 
         g_isLoginSuccess = true;
     }
+}
+
+// 处理添加好友的响应逻辑
+void doAddFriendResponse(json &responsejs)
+{
+    if (0 == responsejs.value("errno", 1))
+    {
+        cout << "add friend success: " << responsejs.value("name", string())
+             << " (" << responsejs.value("email", string()) << ")" << endl;
+        return;
+    }
+    cerr << "add friend failed: " << responsejs.value("errmsg", string("unknown error")) << endl;
+}
+
+// 处理加入群组的响应逻辑
+void doAddGroupResponse(json &responsejs)
+{
+    const int errno_ = responsejs.value("errno", 1);
+    if (0 == errno_)
+    {
+        cout << "join group success: " << responsejs.value("groupname", string()) << endl;
+        return;
+    }
+
+    if (2 == errno_ && responsejs.contains("groups"))
+    {
+        cout << "multiple groups with the same name, retry with groupname#index:" << endl;
+        vector<string> vec = responsejs["groups"];
+        int index = 1;
+        for (string &str : vec)
+        {
+            json group = json::parse(str);
+            cout << "  " << index << ". " << group.value("name", string());
+            const string desc = group.value("desc", string());
+            if (!desc.empty())
+            {
+                cout << " - " << desc;
+            }
+            cout << endl;
+            ++index;
+        }
+        return;
+    }
+
+    cerr << "join group failed: " << responsejs.value("errmsg", string("unknown error")) << endl;
+}
+
+// 处理私聊/群聊发送失败响应（仅失败时返回）
+void doChatSendAck(json &responsejs)
+{
+    const int errno_ = responsejs.value("errno", 1);
+    if (errno_ == 1)
+    {
+        cerr << "message send failed: target user or group not found" << endl;
+    }
+    else if (errno_ == 2)
+    {
+        cerr << "message send failed: content empty or exceeds " << MAX_TEXT_LEN << " bytes" << endl;
+    }
+    else if (errno_ == 3)
+    {
+        cerr << "message send failed: you are not a member of this group" << endl;
+    }
+    else
+    {
+        cerr << "message send failed: " << responsejs.value("errmsg", string("unknown error")) << endl;
+    }
+}
+
+// 处理创建群组的响应逻辑
+void doCreateGroupResponse(json &responsejs)
+{
+    if (0 == responsejs.value("errno", 1))
+    {
+        cout << "create group success: " << responsejs.value("groupname", string()) << endl;
+        return;
+    }
+    cerr << "create group failed: " << responsejs.value("errmsg", string("unknown error")) << endl;
 }
 
 // 子线程 - 接收线程
@@ -379,14 +470,14 @@ void readTaskHandler(int clientfd)
             int msgtype = js["msgid"].get<int>();
             if (ONE_CHAT_MSG == msgtype)
             {
-                cout << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                cout << js["time"].get<string>() << " " << js["name"].get<string>()
                      << " said: " << js["msg"].get<string>() << endl;
                 continue;
             }
 
             if (GROUP_CHAT_MSG == msgtype)
             {
-                cout << "群消息[" << js["groupid"] << "]:" << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
+                cout << "群消息: " << js["time"].get<string>() << " " << js["name"].get<string>()
                      << " said: " << js["msg"].get<string>() << endl;
                 continue;
             }
@@ -404,6 +495,30 @@ void readTaskHandler(int clientfd)
                 sem_post(&rwsem);    // 通知主线程，注册结果处理完成
                 continue;
             }
+
+            if (ADD_FRIEND_MSG_ACK == msgtype)
+            {
+                doAddFriendResponse(js);
+                continue;
+            }
+
+            if (ADD_GROUP_MSG_ACK == msgtype)
+            {
+                doAddGroupResponse(js);
+                continue;
+            }
+
+            if (CREATE_GROUP_MSG_ACK == msgtype)
+            {
+                doCreateGroupResponse(js);
+                continue;
+            }
+
+            if (CHAT_SEND_ACK == msgtype)
+            {
+                doChatSendAck(js);
+                continue;
+            }
         }
     }
 }
@@ -412,13 +527,14 @@ void readTaskHandler(int clientfd)
 void showCurrentUserData()
 {
     cout << "======================login user======================" << endl;
-    cout << "current login user => id:" << g_currentUser.getId() << " name:" << g_currentUser.getName() << endl;
+    cout << "current login user => name:" << g_currentUser.getName()
+         << " email:" << g_currentUser.getEmail() << endl;
     cout << "----------------------friend list---------------------" << endl;
     if (!g_currentUserFriendList.empty())
     {
         for (User &user : g_currentUserFriendList)
         {
-            cout << user.getId() << " " << user.getName() << " " << user.getState() << endl;
+            cout << user.getName() << " " << user.getEmail() << " " << user.getState() << endl;
         }
     }
     cout << "----------------------group list----------------------" << endl;
@@ -426,10 +542,10 @@ void showCurrentUserData()
     {
         for (Group &group : g_currentUserGroupList)
         {
-            cout << group.getId() << " " << group.getName() << " " << group.getDesc() << endl;
+            cout << group.getName() << " " << group.getDesc() << endl;
             for (GroupUser &user : group.getUsers())
             {
-                cout << user.getId() << " " << user.getName() << " " << user.getState()
+                cout << "  " << user.getName() << " " << user.getState()
                      << " " << user.getRole() << endl;
             }
         }
@@ -455,11 +571,11 @@ void loginout(int, string);
 // 系统支持的客户端命令列表
 unordered_map<string, string> commandMap = {
     {"help", "显示所有支持的命令，格式help"},
-    {"chat", "一对一聊天，格式chat:friendid:message"},
-    {"addfriend", "添加好友，格式addfriend:friendid"},
+    {"chat", "一对一聊天，格式chat:email或用户名:message"},
+    {"addfriend", "添加好友，格式addfriend:email或用户名"},
     {"creategroup", "创建群组，格式creategroup:groupname:groupdesc"},
-    {"addgroup", "加入群组，格式addgroup:groupid"},
-    {"groupchat", "群聊，格式groupchat:groupid:message"},
+    {"addgroup", "加入群组，格式addgroup:groupname（同名群用 groupname#序号）"},
+    {"groupchat", "群聊，格式groupchat:groupname:message（同名群用 groupname#序号）"},
     {"loginout", "注销，格式loginout"}};
 
 // 注册系统支持的客户端命令处理
@@ -514,14 +630,51 @@ void help(int, string)
     }
     cout << endl;
 }
+// 解析群名称与可选序号：groupname#2 -> groupname + candidate(1)
+// 返回 false 表示格式非法
+bool parseGroupTarget(const string &target, string &groupname, int &candidate)
+{
+    groupname = target;
+    candidate = -1;
+
+    const string::size_type pos = target.rfind('#');
+    if (pos == string::npos)
+    {
+        return !groupname.empty();
+    }
+
+    const string num = target.substr(pos + 1);
+    if (num.empty())
+    {
+        return false;
+    }
+    for (char ch : num)
+    {
+        if (!isdigit(static_cast<unsigned char>(ch)))
+        {
+            return false;
+        }
+    }
+
+    groupname = target.substr(0, pos);
+    candidate = atoi(num.c_str()) - 1;
+    return !groupname.empty() && candidate >= 0;
+}
+
 // "addfriend" command handler
 void addfriend(int clientfd, string str)
 {
-    int friendid = atoi(str.c_str());
+    const string account = str;
+    if (account.empty())
+    {
+        cerr << "addfriend command invalid!" << endl;
+        return;
+    }
+
     json js;
     js["msgid"] = ADD_FRIEND_MSG;
     js["id"] = g_currentUser.getId();
-    js["friendid"] = friendid;
+    js["account"] = account;
     string buffer = js.dump();
 
     if (!sendFrame(clientfd, buffer))
@@ -532,21 +685,31 @@ void addfriend(int clientfd, string str)
 // "chat" command handler
 void chat(int clientfd, string str)
 {
-    int idx = str.find(":"); // friendid:message
+    int idx = str.find(":"); // email或用户名:message
     if (-1 == idx)
     {
         cerr << "chat command invalid!" << endl;
         return;
     }
 
-    int friendid = atoi(str.substr(0, idx).c_str());
+    const string account = str.substr(0, idx);
     string message = str.substr(idx + 1, str.size() - idx);
+    if (account.empty())
+    {
+        cerr << "chat account can not be empty!" << endl;
+        return;
+    }
+    if (message.empty() || message.size() > MAX_TEXT_LEN)
+    {
+        cerr << "message is empty or too long (max " << MAX_TEXT_LEN << " bytes)!" << endl;
+        return;
+    }
 
     json js;
     js["msgid"] = ONE_CHAT_MSG;
     js["id"] = g_currentUser.getId();
     js["name"] = g_currentUser.getName();
-    js["toid"] = friendid;
+    js["toaccount"] = account;
     js["msg"] = message;
     js["time"] = getCurrentTime();
     string buffer = js.dump();
@@ -581,14 +744,25 @@ void creategroup(int clientfd, string str)
         cerr << "send creategroup msg error -> " << buffer << endl;
     }
 }
-// "addgroup" command handler
+// "addgroup" command handler   groupname[#index]
 void addgroup(int clientfd, string str)
 {
-    int groupid = atoi(str.c_str());
+    string groupname;
+    int candidate = -1;
+    if (!parseGroupTarget(str, groupname, candidate))
+    {
+        cerr << "addgroup command invalid! format: addgroup:groupname（同名群用 groupname#序号）" << endl;
+        return;
+    }
+
     json js;
     js["msgid"] = ADD_GROUP_MSG;
     js["id"] = g_currentUser.getId();
-    js["groupid"] = groupid;
+    js["groupname"] = groupname;
+    if (candidate >= 0)
+    {
+        js["candidate"] = candidate;
+    }
     string buffer = js.dump();
 
     if (!sendFrame(clientfd, buffer))
@@ -596,7 +770,7 @@ void addgroup(int clientfd, string str)
         cerr << "send addgroup msg error -> " << buffer << endl;
     }
 }
-// "groupchat" command handler   groupid:message
+// "groupchat" command handler   groupname[#index]:message
 void groupchat(int clientfd, string str)
 {
     int idx = str.find(":");
@@ -606,14 +780,29 @@ void groupchat(int clientfd, string str)
         return;
     }
 
-    int groupid = atoi(str.substr(0, idx).c_str());
+    string groupname;
+    int candidate = -1;
+    if (!parseGroupTarget(str.substr(0, idx), groupname, candidate))
+    {
+        cerr << "groupchat command invalid! format: groupchat:groupname:message" << endl;
+        return;
+    }
     string message = str.substr(idx + 1, str.size() - idx);
+    if (message.empty() || message.size() > MAX_TEXT_LEN)
+    {
+        cerr << "message is empty or too long (max " << MAX_TEXT_LEN << " bytes)!" << endl;
+        return;
+    }
 
     json js;
     js["msgid"] = GROUP_CHAT_MSG;
     js["id"] = g_currentUser.getId();
     js["name"] = g_currentUser.getName();
-    js["groupid"] = groupid;
+    js["groupname"] = groupname;
+    if (candidate >= 0)
+    {
+        js["candidate"] = candidate;
+    }
     js["msg"] = message;
     js["time"] = getCurrentTime();
     string buffer = js.dump();

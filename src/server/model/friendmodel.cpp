@@ -30,7 +30,7 @@ vector<User> FriendModel::query(int userid)
     }
 
     // 1.组装sql语句
-    string sql = "select a.id,a.name,a.state from user a inner join friend b on b.friendid = a.id where b.userid=" +
+    string sql = "select a.id,a.name,a.email,a.state from user a inner join friend b on b.friendid = a.id where b.userid=" +
                  to_string(userid);
 
     MYSQL_RES *res = mysql.query(sql);
@@ -46,7 +46,8 @@ vector<User> FriendModel::query(int userid)
         User user;
         user.setId(atoi(row[0]));
         user.setName(row[1] ? row[1] : "");
-        user.setState(row[2] ? row[2] : "");
+        user.setEmail(row[2] ? row[2] : "");
+        user.setState(row[3] ? row[3] : "");
         vec.push_back(user);
     }
     mysql_free_result(res);

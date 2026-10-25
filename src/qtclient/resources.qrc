@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/MessageView.qml</file>
+        <file>assets/chat.svg</file>
+        <file>assets/theme.qss</file>
+    </qresource>
+</RCC>

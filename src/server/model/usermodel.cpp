@@ -15,8 +15,9 @@ bool UserModel::insert(User &user)
     }
 
     // 1.组装sql语句（字符串字段统一转义）
-    string sql = "insert into user(name, password, state) values('" +
+    string sql = "insert into user(name, email, password, state) values('" +
                  mysql.escape(user.getName()) + "', '" +
+                 mysql.escape(user.getEmail()) + "', '" +
                  mysql.escape(user.getPwd()) + "', '" +
                  mysql.escape(user.getState()) + "')";
 
@@ -52,13 +53,81 @@ User UserModel::query(int id)
     User user;
     if (row != nullptr)
     {
+        // 表字段顺序：id, name, email, password, state
         user.setId(atoi(row[0]));
         user.setName(row[1] ? row[1] : "");
-        user.setPwd(row[2] ? row[2] : "");
-        user.setState(row[3] ? row[3] : "");
+        user.setEmail(row[2] ? row[2] : "");
+        user.setPwd(row[3] ? row[3] : "");
+        user.setState(row[4] ? row[4] : "");
     }
 
     // 所有分支都必须释放结果集，否则连接无法复用
+    mysql_free_result(res);
+    return user;
+}
+
+// 根据邮箱查询用户信息
+User UserModel::queryByEmail(const string &email)
+{
+    MySQL mysql;
+    if (!mysql.connect())
+    {
+        return User();
+    }
+
+    // 1.组装sql语句（邮箱做转义，防止注入）
+    string sql = "select * from user where email = '" + mysql.escape(email) + "' limit 1";
+
+    MYSQL_RES *res = mysql.query(sql);
+    if (res == nullptr)
+    {
+        return User();
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    User user;
+    if (row != nullptr)
+    {
+        user.setId(atoi(row[0]));
+        user.setName(row[1] ? row[1] : "");
+        user.setEmail(row[2] ? row[2] : "");
+        user.setPwd(row[3] ? row[3] : "");
+        user.setState(row[4] ? row[4] : "");
+    }
+
+    mysql_free_result(res);
+    return user;
+}
+
+// 根据用户名查询用户信息
+User UserModel::queryByName(const string &name)
+{
+    MySQL mysql;
+    if (!mysql.connect())
+    {
+        return User();
+    }
+
+    // 1.组装sql语句（用户名做转义，防止注入）
+    string sql = "select * from user where name = '" + mysql.escape(name) + "' limit 1";
+
+    MYSQL_RES *res = mysql.query(sql);
+    if (res == nullptr)
+    {
+        return User();
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    User user;
+    if (row != nullptr)
+    {
+        user.setId(atoi(row[0]));
+        user.setName(row[1] ? row[1] : "");
+        user.setEmail(row[2] ? row[2] : "");
+        user.setPwd(row[3] ? row[3] : "");
+        user.setState(row[4] ? row[4] : "");
+    }
+
     mysql_free_result(res);
     return user;
 }
@@ -75,6 +144,21 @@ bool UserModel::updateState(User user)
     // 1.组装sql语句
     string sql = "update user set state = '" + mysql.escape(user.getState()) +
                  "' where id = " + to_string(user.getId());
+
+    return mysql.update(sql);
+}
+
+// 更新用户的密码（传入已哈希的密码串，字符串字段统一转义）
+bool UserModel::updatePassword(int id, const string &pwdHash)
+{
+    MySQL mysql;
+    if (!mysql.connect())
+    {
+        return false;
+    }
+
+    string sql = "update user set password = '" + mysql.escape(pwdHash) +
+                 "' where id = " + to_string(id);
 
     return mysql.update(sql);
 }

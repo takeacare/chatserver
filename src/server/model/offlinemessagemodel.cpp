@@ -19,22 +19,8 @@ void OfflineMsgModel::insert(int userid, string msg)
     mysql.update(sql);
 }
 
-// 删除用户的离线消息
-void OfflineMsgModel::remove(int userid)
-{
-    MySQL mysql;
-    if (!mysql.connect())
-    {
-        return;
-    }
-
-    // 1.组装sql语句
-    string sql = "delete from offlinemessage where userid=" + to_string(userid);
-    mysql.update(sql);
-}
-
-// 查询用户的离线消息
-vector<string> OfflineMsgModel::query(int userid)
+// 事务方式取出并清空用户的离线消息，避免查询与删除之间新写入的消息丢失
+vector<string> OfflineMsgModel::take(int userid)
 {
     vector<string> vec;
 
@@ -44,12 +30,17 @@ vector<string> OfflineMsgModel::query(int userid)
         return vec;
     }
 
-    // 1.组装sql语句
+    if (!mysql.update("start transaction"))
+    {
+        return vec;
+    }
+
     string sql = "select message from offlinemessage where userid = " + to_string(userid);
 
     MYSQL_RES *res = mysql.query(sql);
     if (res == nullptr)
     {
+        mysql.update("rollback");
         return vec;
     }
 
@@ -60,6 +51,14 @@ vector<string> OfflineMsgModel::query(int userid)
         vec.push_back(row[0] ? row[0] : "");
     }
     mysql_free_result(res);
+
+    // 同一事务内删除已取出的消息，要么全部生效要么全部保留
+    if (!mysql.update("delete from offlinemessage where userid=" + to_string(userid)))
+    {
+        mysql.update("rollback");
+        return vector<string>();
+    }
+    mysql.update("commit");
 
     return vec;
 }
