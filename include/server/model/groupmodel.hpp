@@ -11,10 +11,10 @@ using namespace std;
 class GroupModel
 {
 public:
-    // 创建群组
-    bool createGroup(Group &group);
-    // 加入群组
-    void addGroup(int userid, int groupid, string role);
+    // 事务化创建群组：群信息与创建者成员关系同时落库
+    bool createGroupWithCreator(Group &group, int creatorId);
+    // 加入群组；重复加入视为成功
+    bool addGroup(int userid, int groupid, string role);
     // 查询用户所在群组信息
     vector<Group> queryGroups(int userid);
     // 根据群名称查询群组（同名群按 id 升序返回，用于按名称加入群组）

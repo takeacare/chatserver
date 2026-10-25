@@ -563,23 +563,20 @@ void ChatService::addFriendResp(const TcpConnectionPtr &conn, json &js, Timestam
 
     const bool accept = js.contains("accept") && js["accept"].is_boolean() && js["accept"].get<bool>();
 
-    // 无待处理请求：重复处理或请求已撤销
-    if (!_friendReqModel.existsPending(requester.getId(), receiver))
-    {
-        ack(1, "no pending request from this user", false);
-        return;
-    }
-
     if (accept)
     {
-        // 先建立好友关系再删请求：落库失败时保留请求，接收方可重试
-        const auto result = _friendModel.addFriend(requester.getId(), receiver);
-        if (result == FriendModel::AddResult::FAILED)
+        // 请求校验、双向好友落库、请求删除在同一事务内完成
+        const auto result = _friendModel.acceptRequest(requester.getId(), receiver);
+        if (result == FriendModel::AcceptResult::NO_REQUEST)
+        {
+            ack(1, "no pending request from this user", false);
+            return;
+        }
+        if (result == FriendModel::AcceptResult::FAILED)
         {
             ack(1, "add friend failed", false);
             return;
         }
-        _friendReqModel.remove(requester.getId(), receiver);
     }
     else if (!_friendReqModel.remove(requester.getId(), receiver))
     {
@@ -723,13 +720,10 @@ void ChatService::createGroup(const TcpConnectionPtr &conn, json &js, Timestamp 
         return;
     }
 
-    // 存储新创建的群组信息
+    // 群组与创建者成员关系在同一事务内落库，避免产生无成员的孤儿群
     Group group(-1, name, desc);
-    if (_groupModel.createGroup(group))
+    if (_groupModel.createGroupWithCreator(group, userid))
     {
-        // 存储群组创建人信息
-        _groupModel.addGroup(userid, group.getId(), "creator");
-
         json response;
         response["msgid"] = CREATE_GROUP_MSG_ACK;
         response["errno"] = 0;
@@ -813,7 +807,11 @@ void ChatService::addGroup(const TcpConnectionPtr &conn, json &js, Timestamp tim
     }
 
     Group &group = matches[candidate];
-    _groupModel.addGroup(userid, group.getId(), "normal");
+    if (!_groupModel.addGroup(userid, group.getId(), "normal"))
+    {
+        reply(1, "join group failed");
+        return;
+    }
 
     json response;
     response["msgid"] = ADD_GROUP_MSG_ACK;

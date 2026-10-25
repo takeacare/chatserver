@@ -4,8 +4,8 @@
 #include <string>
 using namespace std;
 
-// 创建群组
-bool GroupModel::createGroup(Group &group)
+// 事务化创建群组：群信息与创建者成员关系同时落库
+bool GroupModel::createGroupWithCreator(Group &group, int creatorId)
 {
     MySQL mysql;
     if (!mysql.connect())
@@ -13,33 +13,47 @@ bool GroupModel::createGroup(Group &group)
         return false;
     }
 
-    // 1.组装sql语句（群名与描述必须转义）
+    if (!mysql.update("start transaction"))
+    {
+        return false;
+    }
+
     string sql = "insert into allgroup(groupname, groupdesc) values('" +
                  mysql.escape(group.getName()) + "', '" +
                  mysql.escape(group.getDesc()) + "')";
-
-    if (mysql.update(sql))
+    if (!mysql.update(sql))
     {
-        group.setId(mysql_insert_id(mysql.getConnection()));
-        return true;
+        mysql.update("rollback");
+        return false;
     }
 
-    return false;
+    const long long groupId = mysql_insert_id(mysql.getConnection());
+    string memberSql = "insert into groupuser(groupid, userid, grouprole) values(" +
+                       to_string(groupId) + ", " + to_string(creatorId) + ", 'creator')";
+    if (!mysql.update(memberSql) || !mysql.update("commit"))
+    {
+        mysql.update("rollback");
+        return false;
+    }
+
+    group.setId(static_cast<int>(groupId));
+    return true;
 }
 
-// 加入群组
-void GroupModel::addGroup(int userid, int groupid, string role)
+// 加入群组；重复加入视为成功
+bool GroupModel::addGroup(int userid, int groupid, string role)
 {
     MySQL mysql;
     if (!mysql.connect())
     {
-        return;
+        return false;
     }
 
-    // 1.组装sql语句
-    string sql = "insert into groupuser values(" + to_string(groupid) + ", " +
-                 to_string(userid) + ", '" + mysql.escape(role) + "')";
-    mysql.update(sql);
+    // on duplicate key 保证重复加入不报主键冲突，同时仍会暴露外键等真实错误
+    string sql = "insert into groupuser(groupid, userid, grouprole) values(" +
+                 to_string(groupid) + ", " + to_string(userid) + ", '" +
+                 mysql.escape(role) + "') on duplicate key update userid = userid";
+    return mysql.update(sql);
 }
 
 // 查询用户所在群组信息

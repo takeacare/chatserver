@@ -29,7 +29,7 @@ bool FriendModel::isFriend(int userid, int friendid)
     return exists;
 }
 
-// 删除好友：双向移除
+// 删除好友：双向移除好友关系，并清理双方残留的好友请求
 bool FriendModel::removeFriend(int userid, int friendid)
 {
     MySQL mysql;
@@ -43,10 +43,13 @@ bool FriendModel::removeFriend(int userid, int friendid)
         return false;
     }
 
-    bool ok = mysql.update("delete from friend where userid=" + to_string(userid) +
-                           " and friendid=" + to_string(friendid));
-    ok = ok && mysql.update("delete from friend where userid=" + to_string(friendid) +
-                            " and friendid=" + to_string(userid));
+    const string a = to_string(userid);
+    const string b = to_string(friendid);
+    bool ok = mysql.update("delete from friend where (userid=" + a + " and friendid=" + b +
+                           ") or (userid=" + b + " and friendid=" + a + ")");
+    ok = ok && mysql.update("delete from friend_request where (userid=" + a +
+                            " and friendid=" + b + ") or (userid=" + b +
+                            " and friendid=" + a + ")");
 
     if (!ok || !mysql.update("commit"))
     {
@@ -56,58 +59,57 @@ bool FriendModel::removeFriend(int userid, int friendid)
     return true;
 }
 
-// 添加好友关系：双向落库（A->B 与 B->A），任一方向缺失时补齐
-FriendModel::AddResult FriendModel::addFriend(int userid, int friendid)
+// 事务化同意好友请求：请求校验、双向好友落库、请求清理同一事务
+FriendModel::AcceptResult FriendModel::acceptRequest(int requester, int receiver)
 {
     MySQL mysql;
     if (!mysql.connect())
     {
-        return AddResult::FAILED;
+        return AcceptResult::FAILED;
     }
 
     if (!mysql.update("start transaction"))
     {
-        return AddResult::FAILED;
+        return AcceptResult::FAILED;
     }
 
-    // 统计两个方向已存在的关系行数
-    string countSql = "select count(*) from friend where (userid=" + to_string(userid) +
-                      " and friendid=" + to_string(friendid) + ") or (userid=" +
-                      to_string(friendid) + " and friendid=" + to_string(userid) + ")";
+    const string a = to_string(requester);
+    const string b = to_string(receiver);
 
-    long exists = -1;
-    MYSQL_RES *res = mysql.query(countSql);
-    if (res != nullptr)
-    {
-        MYSQL_ROW row = mysql_fetch_row(res);
-        exists = (row != nullptr && row[0] != nullptr) ? atol(row[0]) : -1;
-        mysql_free_result(res);
-    }
-    if (exists < 0)
+    // 锁定待处理请求，避免与重复处理并发
+    string checkSql = "select 1 from friend_request where userid=" + a + " and friendid=" + b +
+                      " for update";
+    MYSQL_RES *res = mysql.query(checkSql);
+    if (res == nullptr)
     {
         mysql.update("rollback");
-        return AddResult::FAILED;
+        return AcceptResult::FAILED;
     }
-
-    if (exists >= 2)
+    MYSQL_ROW row = mysql_fetch_row(res);
+    const bool pending = (row != nullptr);
+    mysql_free_result(res);
+    if (!pending)
     {
-        mysql.update("commit");
-        return AddResult::ALREADY;
+        mysql.update("rollback");
+        return AcceptResult::NO_REQUEST;
     }
 
-    // 补齐缺失方向：insert ignore 保证重复行不报错（防御主键冲突）
-    bool ok = mysql.update("insert ignore into friend values(" + to_string(userid) + ", " +
-                           to_string(friendid) + ")");
-    ok = ok && mysql.update("insert ignore into friend values(" + to_string(friendid) + ", " +
-                            to_string(userid) + ")");
+    bool ok = mysql.update("insert ignore into friend(userid, friendid) values(" + a + ", " + b +
+                           ")");
+    ok = ok && mysql.update("insert ignore into friend(userid, friendid) values(" + b + ", " +
+                            a + ")");
+    // 双向请求都清掉，避免另一方向的残留请求继续弹窗
+    ok = ok && mysql.update("delete from friend_request where (userid=" + a +
+                            " and friendid=" + b + ") or (userid=" + b +
+                            " and friendid=" + a + ")");
 
     if (!ok || !mysql.update("commit"))
     {
         mysql.update("rollback");
-        return AddResult::FAILED;
+        return AcceptResult::FAILED;
     }
 
-    return AddResult::ADDED;
+    return AcceptResult::ACCEPTED;
 }
 
 // 返回用户好友列表

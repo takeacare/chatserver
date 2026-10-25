@@ -78,7 +78,7 @@ Request flow: `ChatServer::onMessage` (muduo, 4 worker threads) → deframe → 
 
 - `src/server/chatserver.cpp` — muduo callbacks, stream deframing, `msgid` dispatch, connection teardown.
 - `src/server/chatservice.cpp` — singleton business layer: login/reg, chat, friend/group operations, login throttling, online-connection map (`_userConnMap`, guarded by `_connMutex`). New handlers are registered in the `ChatService` constructor and declared in the header.
-- `src/server/model/` — one model per table, including `FriendRequestModel` for pending requests. Access MySQL through the RAII `MySQL` handle (`include/server/db/db.h`), which borrows from `ConnectionPool` and returns it on destruction. Always escape strings with `mysql.escape(...)` and free every `MYSQL_RES*`. Friend add/remove operations run in transactions and maintain both directions.
+- `src/server/model/` — one model per table, including `FriendRequestModel` for pending requests. Access MySQL through the RAII `MySQL` handle (`include/server/db/db.h`), which borrows from `ConnectionPool` and returns it on destruction. Always escape strings with `mysql.escape(...)` and free every `MYSQL_RES*`. `FriendModel::acceptRequest` (request check + both friendship rows + pending-request cleanup) and `removeFriend` are single transactions; `GroupModel::createGroupWithCreator` creates the group and creator membership atomically; `OfflineMsgModel::take` deletes only the ids it selected so concurrent inserts survive for the next login.
 - `src/server/db/connectionpool.cpp` — lazy-growing pool; `acquire()` blocks when exhausted.
 - `src/server/redis/redis.cpp` — one publish context plus one subscribe context owned by a dedicated reader thread; subscribe/unsubscribe commands are queued and the reader is woken via a pipe. `subscribe()` waits for Redis confirmation on login; `unsubscribe()` is fire-and-forget. Redis channel = user id.
 - `src/server/main.cpp` — parses `ip port`, loads config, initializes pool, installs signal handlers.
@@ -95,13 +95,15 @@ Security invariants to preserve: passwords are stored as `sha256$<salt>$<digest>
 `docs/schema.sql` contains the full DDL; provision with `mysql -uroot -p < docs/schema.sql`. The models assume:
 
 - `user(id, name UNIQUE, email UNIQUE, password, state)` — `UserModel` uses `select *` and interprets columns in exactly that order.
-- `friend(userid, friendid)` — both directions are stored; primary key is `(userid, friendid)`.
-- `friend_request(userid, friendid)` — pending requests only (userid = requester, friendid = recipient); deleted on accept or decline.
-- `allgroup(id, groupname, groupdesc)`.
-- `groupuser(groupid, userid, grouprole)` — inserts rely on this column order.
-- `offlinemessage(userid, message)` — raw JSON.
+- `friend(userid, friendid)` — both directions are stored; primary key `(userid, friendid)`, reverse index `(friendid, userid)`, both columns FK to `user.id` with `ON DELETE CASCADE`.
+- `friend_request(userid, friendid)` — pending requests only (userid = requester, friendid = recipient); PK `(userid, friendid)`, target index `(friendid, userid)`, FKs with cascade; deleted on accept or decline.
+- `allgroup(id, groupname, groupdesc)` — index `(groupname, id)` for name lookup.
+- `groupuser(groupid, userid, grouprole)` — PK `(groupid, userid)`, user index `(userid, groupid)`, FKs to group/user with cascade.
+- `offlinemessage(id, userid, message, created_at)` — raw JSON; ordered by auto-increment `id`, index `(userid, id)`, FK to user with cascade. Inserts must name `(userid, message)` explicitly.
 
-The columns/order above must match the code; `docs/schema.sql` is the source of truth for new environments. Legacy databases written by the old single-direction `FriendModel::insert` may contain one-way rows; run `docs/migrate_repair_one_way_friends.sql` to backfill the missing reverse rows.
+`docs/schema.sql` is the source of truth for new environments. Existing databases need the one-time migrations:
+1. `docs/migrate_repair_one_way_friends.sql` — backfill legacy one-way friend rows.
+2. `docs/migrate_indexes_constraints.sql` — add offline `id/created_at`, indexes and foreign keys. It changes the `offlinemessage` column layout, so apply it while the server is stopped and start the new server afterwards (the old binary's position-based insert will not fit the new table).
 
 ## Terminal client
 
@@ -135,7 +137,17 @@ loginout
 
 ## Tests
 
-There is no automated test framework or test target. `test/testjson/` and `test/testmuduo/` are standalone experiments and are not part of the root CMake build. Verification is manual with a live MySQL/Redis and the clients (or ad-hoc socket scripts); the GUI can be smoke-started headlessly with:
+`tests/integration/test_chat.py` is an isolated Python `unittest` suite. Each run creates a temporary MySQL database from `docs/schema.sql`, starts a private `redis-server` on a random port, launches two `ChatServer` nodes on random ports, and covers schema constraints/cascades, framing and auth, cross-node routing, offline message ordering, transactional friend/group operations, and immediate-relogin subscriptions. It never uses the `db_name`/Redis from `config/server.conf`, and drops the test database at the end.
+
+Prerequisites: `config/server.conf` with MySQL credentials that can create/drop databases, `mysql` and `redis-server` on `PATH`, and a built `bin/ChatServer`. Run:
+
+```bash
+python3 tests/integration/test_chat.py -v
+# or through CTest after building
+ctest --test-dir build -R integration_chat --output-on-failure
+```
+
+The suite skips with a reason when prerequisites are missing. `test/testjson/` and `test/testmuduo/` remain standalone experiments. The GUI can be smoke-started headlessly with:
 
 ```bash
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ./bin/ChatGui

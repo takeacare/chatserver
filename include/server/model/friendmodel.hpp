@@ -9,21 +9,21 @@ using namespace std;
 class FriendModel
 {
 public:
-    // 添加好友的结果
-    enum class AddResult
+    // 同意好友请求的结果
+    enum class AcceptResult
     {
-        ADDED,   // 新建立（或补齐了缺失方向）
-        ALREADY, // 双向好友关系已存在
-        FAILED   // 数据库操作失败
+        ACCEPTED,   // 已建立双向好友关系并删除待处理请求
+        NO_REQUEST, // 没有对应的待处理请求
+        FAILED      // 数据库操作失败
     };
 
-    // 添加好友关系：双向落库（A->B 与 B->A），已存在的方向不重复插入
-    AddResult addFriend(int userid, int friendid);
+    // 事务化同意好友请求：校验请求、双向落库、清理请求在同一事务内完成
+    AcceptResult acceptRequest(int requester, int receiver);
 
     // 双向好友关系是否已存在（任一方向存在即为好友）
     bool isFriend(int userid, int friendid);
 
-    // 删除好友：双向移除
+    // 删除好友：双向移除好友关系，并清理双方残留的好友请求
     bool removeFriend(int userid, int friendid);
 
     // 返回用户好友列表

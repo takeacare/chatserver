@@ -13,8 +13,8 @@ void OfflineMsgModel::insert(int userid, string msg)
         return;
     }
 
-    // 1.组装sql语句（消息内容必须转义）
-    string sql = "insert into offlinemessage values(" + to_string(userid) +
+    // 显式列名：表中有自增 id 与 created_at 列
+    string sql = "insert into offlinemessage(userid, message) values(" + to_string(userid) +
                  ", '" + mysql.escape(msg) + "')";
     mysql.update(sql);
 }
@@ -35,7 +35,9 @@ vector<string> OfflineMsgModel::take(int userid)
         return vec;
     }
 
-    string sql = "select message from offlinemessage where userid = " + to_string(userid);
+    // 按自增 id 保证补发顺序，并记录本次取出的行 id
+    string sql = "select id, message from offlinemessage where userid = " + to_string(userid) +
+                 " order by id asc";
 
     MYSQL_RES *res = mysql.query(sql);
     if (res == nullptr)
@@ -44,19 +46,32 @@ vector<string> OfflineMsgModel::take(int userid)
         return vec;
     }
 
-    // 把userid用户的所有离线消息放入vec中返回
+    vector<unsigned long long> ids;
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(res)) != nullptr)
     {
-        vec.push_back(row[0] ? row[0] : "");
+        ids.push_back(strtoull(row[0] ? row[0] : "0", nullptr, 10));
+        vec.push_back(row[1] ? row[1] : "");
     }
     mysql_free_result(res);
 
-    // 同一事务内删除已取出的消息，要么全部生效要么全部保留
-    if (!mysql.update("delete from offlinemessage where userid=" + to_string(userid)))
+    // 只删除本次取出的 id：事务期间新写入的消息不会被误删，留待下次登录补发
+    if (!ids.empty())
     {
-        mysql.update("rollback");
-        return vector<string>();
+        string idList;
+        for (size_t i = 0; i < ids.size(); ++i)
+        {
+            if (i > 0)
+            {
+                idList += ",";
+            }
+            idList += to_string(ids[i]);
+        }
+        if (!mysql.update("delete from offlinemessage where id in (" + idList + ")"))
+        {
+            mysql.update("rollback");
+            return vector<string>();
+        }
     }
     mysql.update("commit");
 
