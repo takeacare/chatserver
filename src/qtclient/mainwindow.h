@@ -72,7 +72,6 @@ private:
     {
         int id = -1;
         QString name;
-        QString desc;
         QVector<MemberInfo> members;
         bool stranger = false;
     };
@@ -87,8 +86,7 @@ private:
     void appendIncoming(const nlohmann::json &js, bool offline);
     void addFriendItem(int id, const QString &name, const QString &email, const QString &state,
                        bool stranger);
-    void addGroupItem(int id, const QString &name, const QString &desc,
-                      const QVector<MemberInfo> &members, bool stranger);
+    void addGroupItem(int id, const QString &name, bool stranger);
     void updateActiveHeader();
     // 弹出好友请求确认框（同意/拒绝），登录补发与实时通知共用
     void promptFriendRequest(const QString &name, const QString &email);

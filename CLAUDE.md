@@ -133,7 +133,7 @@ loginout
 - The message view is a `QQuickWidget`. Never set a `QGraphicsEffect` (shadow) on it or any of its ancestors (unsupported by Qt). Also do not use opacity animations in the ListView `add` transition: the animation can stall while the QQuickWidget window is not rendering, leaving new message delegates at `opacity=0` (messages look missing). New messages render instantly; only the `displaced` animation remains.
 - "Refresh lists" is implemented by sending `LOGINOUT` then `LOGIN` on the same connection and rebuilding from the new ACK (the server does not close the connection on logout). Keep this in mind when changing logout semantics.
 
-`docs/qtgui-layout.md` documents the full layout, signal table, and protocol mapping. Its "known limitations" section is stale regarding ACKs (friend/group results now have ACKs), so verify against code. `.trae/documents/修复聊天服务器现存缺陷.md` records the rationale for the framing, SQL-safety, pooling, and Redis threading design.
+`docs/qtgui-layout.md` documents the full layout, signal table, and protocol mapping. `.trae/documents/修复聊天服务器现存缺陷.md` records the rationale for the framing, SQL-safety, pooling, and Redis threading design.
 
 ## Tests
 
@@ -147,7 +147,7 @@ python3 tests/integration/test_chat.py -v
 ctest --test-dir build -R integration_chat --output-on-failure
 ```
 
-The suite skips with a reason when prerequisites are missing. `test/testjson/` and `test/testmuduo/` remain standalone experiments. The GUI can be smoke-started headlessly with:
+The suite skips with a reason when prerequisites are missing. The GUI can be smoke-started headlessly with:
 
 ```bash
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ./bin/ChatGui

@@ -37,7 +37,6 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void appendMessage(const Message &msg);
-    void clearMessages();
 
 private:
     QVector<Message> _messages;

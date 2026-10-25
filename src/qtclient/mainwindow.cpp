@@ -429,14 +429,12 @@ void MainWindow::applyLoginAck(const nlohmann::json &ack, bool refresh)
                 GroupEntry ge;
                 ge.id = g.value("id", -1);
                 ge.name = QString::fromStdString(g.value("groupname", std::string()));
-                ge.desc = QString::fromStdString(g.value("groupdesc", std::string()));
                 if (g.contains("users"))
                 {
                     for (const auto &userEntry : g["users"])
                     {
                         const nlohmann::json u = nlohmann::json::parse(userEntry.get<std::string>());
                         MemberInfo mi;
-                        mi.id = u.value("id", -1);
                         mi.name = QString::fromStdString(u.value("name", std::string()));
                         mi.state = QString::fromStdString(u.value("state", std::string()));
                         mi.role = QString::fromStdString(u.value("role", std::string()));
@@ -544,7 +542,7 @@ void MainWindow::rebuildListsFromSession()
     }
     for (const auto &g : _groups)
     {
-        addGroupItem(g.id, g.name, g.desc, g.members, g.stranger);
+        addGroupItem(g.id, g.name, g.stranger);
     }
 }
 
@@ -590,11 +588,8 @@ void MainWindow::addFriendItem(int id, const QString &name, const QString &email
     _friendItemIds.insert(id);
 }
 
-void MainWindow::addGroupItem(int id, const QString &name, const QString &desc,
-                              const QVector<MemberInfo> &members, bool stranger)
+void MainWindow::addGroupItem(int id, const QString &name, bool stranger)
 {
-    Q_UNUSED(desc);
-    Q_UNUSED(members);
     if (id <= 0 || _groupItemIds.contains(id))
     {
         return;
@@ -642,7 +637,6 @@ Conversation *MainWindow::ensureConversation(int id, bool isGroup, const QString
             {
                 conv->title = QStringLiteral("群：%1").arg(g.name);
                 conv->members = g.members;
-                conv->desc = g.desc;
                 known = true;
                 break;
             }
@@ -658,7 +652,7 @@ Conversation *MainWindow::ensureConversation(int id, bool isGroup, const QString
                 entry.name = name;
                 entry.stranger = true;
                 _groups.push_back(entry);
-                addGroupItem(id, name, QString(), QVector<MemberInfo>(), true);
+                addGroupItem(id, name, true);
             }
         }
     }
@@ -726,7 +720,6 @@ void MainWindow::updateActiveHeader()
             if (g.id == _active->peerId)
             {
                 _active->members = g.members;
-                _active->desc = g.desc;
                 if (!g.stranger)
                 {
                     _active->title = QStringLiteral("群：%1").arg(g.name);

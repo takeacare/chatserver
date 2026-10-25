@@ -59,14 +59,3 @@ void MessageModel::appendMessage(const Message &msg)
     _messages.push_back(msg);
     endInsertRows();
 }
-
-void MessageModel::clearMessages()
-{
-    if (_messages.isEmpty())
-    {
-        return;
-    }
-    beginResetModel();
-    _messages.clear();
-    endResetModel();
-}

@@ -9,7 +9,6 @@
 // 群成员信息（来自登录响应 groups[].users）
 struct MemberInfo
 {
-    int id = -1;
     QString name;
     QString state;
     QString role;
@@ -23,7 +22,6 @@ struct Conversation
     QString title;
     MessageModel *model = nullptr;
     QVector<MemberInfo> members;
-    QString desc;
 };
 
 // 会话索引键：u:<id> 或 g:<id>
