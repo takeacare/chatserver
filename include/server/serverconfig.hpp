@@ -1,9 +1,12 @@
 #ifndef SERVERCONFIG_H
 #define SERVERCONFIG_H
 
+#include <climits>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unistd.h>
+#include <vector>
 using namespace std;
 
 /*
@@ -94,10 +97,28 @@ public:
     }
 
     // 按常见路径探测配置文件；全部失败返回 false
+    // 依次尝试：工作目录 config/server.conf、工作目录 server.conf、
+    //           可执行文件目录/../config/server.conf、可执行文件目录/config/server.conf
     bool loadDefault()
     {
-        const char *candidates[] = {"config/server.conf", "server.conf"};
-        for (const char *path : candidates)
+        vector<string> candidates = {"config/server.conf", "server.conf"};
+
+        // 从 bin/ 直接启动时，回退到仓库根目录下的 config/
+        char exePath[PATH_MAX] = {0};
+        const ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+        if (len > 0)
+        {
+            string dir(exePath, static_cast<size_t>(len));
+            const auto slash = dir.find_last_of('/');
+            if (slash != string::npos)
+            {
+                dir.erase(slash);
+                candidates.push_back(dir + "/../config/server.conf");
+                candidates.push_back(dir + "/config/server.conf");
+            }
+        }
+
+        for (const string &path : candidates)
         {
             ifstream test(path);
             if (test.is_open())

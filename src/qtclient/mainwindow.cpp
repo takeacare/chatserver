@@ -6,7 +6,6 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QEasingCurve>
 #include <QFont>
 #include <QFormLayout>
 #include <QFrame>
@@ -25,7 +24,6 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
-#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QQmlContext>
 #include <QQuickWidget>
@@ -239,9 +237,9 @@ void MainWindow::buildUi()
     rightLayout->addWidget(headerCard);
 
     // 消息卡片（QML 视图透明背景，圆角与描边由卡片提供）
+    // QQuickWidget 及其祖先不能使用 QGraphicsEffect（Qt 不支持该组合），阴影只加在不含 QML 的卡片上。
     auto *messageCard = new QFrame(rightColumn);
     messageCard->setObjectName(QStringLiteral("MessageCard"));
-    applyShadow(messageCard, 26, 6, 26);
     auto *messageLayout = new QVBoxLayout(messageCard);
     messageLayout->setContentsMargins(2, 2, 2, 2);
 
@@ -709,14 +707,6 @@ void MainWindow::switchConversation(Conversation *conv)
     _inputEdit->setEnabled(true);
     _sendBtn->setEnabled(true);
     _inputEdit->setFocus();
-
-    // 切换会话时的淡入过渡，避免消息区内容突兀跳变
-    auto *fade = new QPropertyAnimation(_messageView, "opacity", this);
-    fade->setDuration(180);
-    fade->setStartValue(0.25);
-    fade->setEndValue(1.0);
-    fade->setEasingCurve(QEasingCurve::OutCubic);
-    fade->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void MainWindow::updateActiveHeader()

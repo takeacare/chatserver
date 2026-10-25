@@ -39,7 +39,7 @@ Build layout notes:
 ./bin/ChatGui                        # host/port set in the login dialog
 ```
 
-The server refuses to start without a config file: it probes `config/server.conf`, then `server.conf` relative to the working directory. The file is `key=value` (see `config/server.conf` for keys) and contains DB credentials; it is gitignored and must not be committed. `ServerConfig` exposes the values; defaults exist for ports/pool size but the password defaults to empty.
+The server refuses to start without a config file: it probes `config/server.conf` / `server.conf` in the working directory, then `<exe>/../config/server.conf` and `<exe>/config/server.conf` (so running `./ChatServer` from `bin/` also works). The file is `key=value` (see `config/server.conf` for keys) and contains DB credentials; it is gitignored and must not be committed. `ServerConfig` exposes the values; defaults exist for ports/pool size but the password defaults to empty.
 
 Runtime prerequisites: MySQL with a `chat` database and Redis at the configured address. If Redis is unavailable the server still runs and local delivery works, but cross-node routing does not.
 
@@ -101,7 +101,7 @@ Security invariants to preserve: passwords are stored as `sha256$<salt>$<digest>
 - `groupuser(groupid, userid, grouprole)` — inserts rely on this column order.
 - `offlinemessage(userid, message)` — raw JSON.
 
-The columns/order above must match the code; `docs/schema.sql` is the source of truth for new environments.
+The columns/order above must match the code; `docs/schema.sql` is the source of truth for new environments. Legacy databases written by the old single-direction `FriendModel::insert` may contain one-way rows; run `docs/migrate_repair_one_way_friends.sql` to backfill the missing reverse rows.
 
 ## Terminal client
 
@@ -128,6 +128,7 @@ loginout
 - `mainwindow.*` — owns friend/group lists and conversation routing. Conversations are keyed `u:<id>` / `g:<id>` (`conversation.h`); incoming `ONE_CHAT_MSG`/`GROUP_CHAT_MSG` are routed from `id`/`groupid`, with stranger peer entries created on demand. Pending friend requests from the login ACK pop up sequentially; live requests arrive as `ADD_FRIEND_MSG`. Right-clicking a friend opens a delete-friend menu (`DEL_FRIEND_MSG`).
 - `messagemodel.*` — one `QAbstractListModel` per conversation, injected into `MessageView.qml` through a `QQuickWidget` context property. QML is display-only.
 - `assets/theme.qss` and the QML are bundled by `resources.qrc`; `main.cpp` loads `:/assets/theme.qss` and uses the Fusion style.
+- The message view is a `QQuickWidget`. Never set a `QGraphicsEffect` (shadow) on it or any of its ancestors (unsupported by Qt). Also do not use opacity animations in the ListView `add` transition: the animation can stall while the QQuickWidget window is not rendering, leaving new message delegates at `opacity=0` (messages look missing). New messages render instantly; only the `displaced` animation remains.
 - "Refresh lists" is implemented by sending `LOGINOUT` then `LOGIN` on the same connection and rebuilding from the new ACK (the server does not close the connection on logout). Keep this in mind when changing logout semantics.
 
 `docs/qtgui-layout.md` documents the full layout, signal table, and protocol mapping. Its "known limitations" section is stale regarding ACKs (friend/group results now have ACKs), so verify against code. `.trae/documents/修复聊天服务器现存缺陷.md` records the rationale for the framing, SQL-safety, pooling, and Redis threading design.

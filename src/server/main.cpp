@@ -28,7 +28,9 @@ int main(int argc, char **argv)
     // 加载运行配置（数据库/Redis凭据外置，禁止硬编码在代码中）
     if (!ServerConfig::instance().loadDefault())
     {
-        cerr << "missing config file: config/server.conf (db_host/db_user/db_password/... )" << endl;
+        cerr << "missing config file: config/server.conf (db_host/db_user/db_password/... ); "
+                "run from the repo root or keep config/server.conf next to the executable"
+             << endl;
         exit(-1);
     }
     const ServerConfig &cfg = ServerConfig::instance();

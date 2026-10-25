@@ -95,6 +95,8 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 - 窗口最小尺寸 800×600，默认 1080×720；缩放时消息区与输入框自动伸缩。
 - 气泡宽度按视口比例（`row.width * 0.68`，上限 500 px）计算，文本自动换行，因此在不同分辨率/缩放下不会溢出。
 - QML 使用 `anchors` + `ListView.anchors.fill`，随 QQuickWidget 尺寸变化自动重排。
+- **QQuickWidget 及其祖先控件不得设置 QGraphicsEffect（如阴影）**，Qt 不支持该组合，可能引起渲染异常；消息卡片因此不加阴影。
+- **ListView 的 `add` 过渡不要做 opacity 动画**：QQuickWidget 的窗口未激活/被遮挡时动画时钟可能停住，新增消息 delegate 会停在 `opacity=0`，表现为“消息不显示”。新消息现在直接显示，只保留 `displaced` 位移动画。
 - 消息列表 `clip: true`，新消息到达时 `positionViewAtEnd()` 自动滚到底部。
 - 应用启动时设置 `HighDpiScaleFactorRoundingPolicy::PassThrough`，125% / 150% 等非整数缩放不再取整。
 - 样式表长度使用逻辑像素、字号使用 `pt`，布局不使用固定像素高度，避免高 DPI 下模糊、错位与截断。
@@ -106,7 +108,7 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 - **层级**：AppTitle（17pt 粗）/ ConversationTitle（12pt 粗）/ 正文（10pt）/ CardCaption（8.5pt）；主要操作使用 `#PrimaryButton`（蓝色渐变），次要操作使用 `#SoftButton`，低干扰操作使用 `#GhostButton`。
 - **形状与阴影**：卡片统一 14 px 圆角、控件 8–9 px 圆角；主卡片通过 `QGraphicsDropShadowEffect` 添加低透明度投影，形成层次。
 - **交互反馈**：所有按钮、输入框、页签、列表项均提供 hover / pressed / focus / disabled 状态；状态栏文本通过 `state` 属性（`idle` / `ok` / `info` / `error`）切换语义色。
-- **过渡动画**：切换会话时消息区 180 ms 淡入；QML 新消息 200 ms 淡入、列表重排 160 ms 平滑位移。
+- **过渡动画**：仅保留列表重排 160 ms 位移动画；新消息直接显示，会话切换直接切换（QQuickWidget 没有可动画的 opacity 属性，且 QWidget 级淡入与图形效果不兼容）。
 - **列表呈现**：好友/群组使用按名称哈希取色的首字母头像，好友头像右下角以绿色/灰色圆点表示在线状态。
 
 ## 5. 信号槽连接关系

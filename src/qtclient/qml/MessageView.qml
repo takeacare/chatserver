@@ -33,16 +33,9 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: 480
 
-        // 新消息淡入，避免突然出现
-        add: Transition {
-            NumberAnimation {
-                property: "opacity"
-                from: 0
-                to: 1
-                duration: 200
-                easing.type: Easing.OutCubic
-            }
-        }
+        // 注意：不要给 add 过渡加 opacity 动画。QQuickWidget 在窗口未激活/被遮挡时
+        // 动画时钟可能停住，新消息 delegate 会停在 opacity=0，表现为“消息不显示”。
+        // 新消息因此直接显示，仅保留列表重排的位移动画。
 
         // 列表重排时平滑位移
         displaced: Transition {
@@ -99,7 +92,8 @@ Item {
 
                 Rectangle {
                     id: bubble
-                    width: messageText.width + 24
+                    // 气泡至少容纳时间戳，避免短消息的时间被 elide 成 "2026-..."
+                    width: Math.max(messageText.width + 24, timeText.implicitWidth + 24)
                     height: contentColumn.implicitHeight + 24
                     radius: 16
                     border.width: model.mine ? 0 : 1
@@ -140,7 +134,8 @@ Item {
                         }
 
                         Text {
-                            width: messageText.width
+                            id: timeText
+                            width: contentColumn.width
                             text: model.time
                             color: model.mine ? "#dbeafe" : "#9aa1ad"
                             font.pixelSize: 11
