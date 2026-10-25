@@ -322,20 +322,121 @@ void doLoginResponse(json &responsejs)
             }
         }
 
+        // 显示离线期间收到的待处理好友请求
+        if (responsejs.contains("pendingrequests"))
+        {
+            vector<string> vec = responsejs["pendingrequests"];
+            if (!vec.empty())
+            {
+                cout << "------ pending friend requests ------" << endl;
+                for (string &str : vec)
+                {
+                    json js = json::parse(str);
+                    cout << js.value("name", string()) << " (" << js.value("email", string())
+                         << ")  -> resp:" << js.value("email", string()) << " y|n" << endl;
+                }
+            }
+        }
+
         g_isLoginSuccess = true;
     }
 }
 
-// 处理添加好友的响应逻辑
+// 处理添加好友的响应逻辑（含发起方收到的「对方已同意」通知：agreed=true）
 void doAddFriendResponse(json &responsejs)
 {
-    if (0 == responsejs.value("errno", 1))
+    // 对方同意了你的好友请求（服务端复用 ACK 号推送，agreed=true）
+    if (responsejs.value("agreed", false) && responsejs.value("errno", 1) == 0)
     {
-        cout << "add friend success: " << responsejs.value("name", string())
-             << " (" << responsejs.value("email", string()) << ")" << endl;
+        cout << responsejs.value("name", string()) << " accepted your friend request, "
+             << "you are friends now (relogin to refresh the list)" << endl;
+        return;
+    }
+
+    const int errno_ = responsejs.value("errno", 1);
+    if (0 == errno_)
+    {
+        cout << "friend request sent to " << responsejs.value("name", string())
+             << " (" << responsejs.value("email", string()) << "), waiting for approval" << endl;
+        return;
+    }
+    if (4 == errno_)
+    {
+        cout << "you are already friends with " << responsejs.value("name", string()) << endl;
+        return;
+    }
+    if (5 == errno_)
+    {
+        cout << "friend request already sent, waiting for approval" << endl;
         return;
     }
     cerr << "add friend failed: " << responsejs.value("errmsg", string("unknown error")) << endl;
+}
+
+// 收到好友请求通知（实时推送）
+void doFriendRequestNotify(json &js)
+{
+    cout << js.value("name", string()) << " (" << js.value("email", string())
+         << ") wants to add you as a friend." << endl;
+    cout << "reply with: resp:" << js.value("email", string()) << " y|n" << endl;
+}
+
+// 处理好友请求处理结果的响应（同意/拒绝提交后的回执）
+void doFriendRespAck(json &js)
+{
+    if (0 != js.value("errno", 1))
+    {
+        cerr << "friend request resp failed: " << js.value("errmsg", string("unknown error")) << endl;
+        return;
+    }
+    cout << (js.value("agreed", false) ? "accepted" : "declined")
+         << " friend request" << endl;
+}
+
+// 从本地好友缓存中移除指定邮箱的用户
+void removeFriendFromList(const string &email)
+{
+    for (auto it = g_currentUserFriendList.begin(); it != g_currentUserFriendList.end(); ++it)
+    {
+        if (it->getEmail() == email)
+        {
+            g_currentUserFriendList.erase(it);
+            return;
+        }
+    }
+}
+
+// 被好友移除通知（实时推送）
+void doFriendRemovedNotify(json &js)
+{
+    const string email = js.value("email", string());
+    cout << js.value("name", string()) << " has removed you from their friend list" << endl;
+    removeFriendFromList(email);
+}
+
+// 处理删除好友的响应逻辑
+void doDelFriendResponse(json &js)
+{
+    const int errno_ = js.value("errno", 1);
+    if (0 == errno_)
+    {
+        const string email = js.value("email", string());
+        cout << "friend removed: " << js.value("name", string())
+             << " (" << email << ")" << endl;
+        removeFriendFromList(email);
+        return;
+    }
+    if (1 == errno_)
+    {
+        cerr << "delete friend failed: user not found" << endl;
+        return;
+    }
+    if (2 == errno_)
+    {
+        cerr << "delete friend failed: you are not friends with this user" << endl;
+        return;
+    }
+    cerr << "delete friend failed: " << js.value("errmsg", string("unknown error")) << endl;
 }
 
 // 处理加入群组的响应逻辑
@@ -502,6 +603,32 @@ void readTaskHandler(int clientfd)
                 continue;
             }
 
+            if (ADD_FRIEND_MSG == msgtype)
+            {
+                // 下行复用：好友请求通知
+                doFriendRequestNotify(js);
+                continue;
+            }
+
+            if (ADD_FRIEND_RESP_MSG_ACK == msgtype)
+            {
+                doFriendRespAck(js);
+                continue;
+            }
+
+            if (DEL_FRIEND_MSG == msgtype)
+            {
+                // 下行复用：被好友移除通知
+                doFriendRemovedNotify(js);
+                continue;
+            }
+
+            if (DEL_FRIEND_MSG_ACK == msgtype)
+            {
+                doDelFriendResponse(js);
+                continue;
+            }
+
             if (ADD_GROUP_MSG_ACK == msgtype)
             {
                 doAddGroupResponse(js);
@@ -559,6 +686,10 @@ void help(int fd = 0, string str = "");
 void chat(int, string);
 // "addfriend" command handler
 void addfriend(int, string);
+// "resp" command handler（处理好友请求）
+void resp(int, string);
+// "delfriend" command handler（删除好友）
+void delfriend(int, string);
 // "creategroup" command handler
 void creategroup(int, string);
 // "addgroup" command handler
@@ -572,7 +703,9 @@ void loginout(int, string);
 unordered_map<string, string> commandMap = {
     {"help", "显示所有支持的命令，格式help"},
     {"chat", "一对一聊天，格式chat:email或用户名:message"},
-    {"addfriend", "添加好友，格式addfriend:email或用户名"},
+    {"addfriend", "添加好友（发请求），格式addfriend:email或用户名"},
+    {"resp", "处理好友请求，格式resp:对方邮箱:y或n"},
+    {"delfriend", "删除好友，格式delfriend:email或用户名"},
     {"creategroup", "创建群组，格式creategroup:groupname:groupdesc"},
     {"addgroup", "加入群组，格式addgroup:groupname（同名群用 groupname#序号）"},
     {"groupchat", "群聊，格式groupchat:groupname:message（同名群用 groupname#序号）"},
@@ -583,6 +716,8 @@ unordered_map<string, function<void(int, string)>> commandHandlerMap = {
     {"help", help},
     {"chat", chat},
     {"addfriend", addfriend},
+    {"resp", resp},
+    {"delfriend", delfriend},
     {"creategroup", creategroup},
     {"addgroup", addgroup},
     {"groupchat", groupchat},
@@ -680,6 +815,64 @@ void addfriend(int clientfd, string str)
     if (!sendFrame(clientfd, buffer))
     {
         cerr << "send addfriend msg error -> " << buffer << endl;
+    }
+}
+// "resp" command handler  对方邮箱:y|n（同意/拒绝好友请求）
+void resp(int clientfd, string str)
+{
+    int idx = str.find(":");
+    if (-1 == idx)
+    {
+        cerr << "resp command invalid! format: resp:email:y|n" << endl;
+        return;
+    }
+
+    const string email = str.substr(0, idx);
+    string answer = str.substr(idx + 1, str.size() - idx);
+    if (email.empty() || answer.empty())
+    {
+        cerr << "resp command invalid! format: resp:email:y|n" << endl;
+        return;
+    }
+
+    // 只取首字符判定，容忍 "y "/yes/YES 等输入
+    const char first = static_cast<char>(tolower(static_cast<unsigned char>(answer[0])));
+    if (first != 'y' && first != 'n')
+    {
+        cerr << "resp answer must be y or n!" << endl;
+        return;
+    }
+
+    json js;
+    js["msgid"] = ADD_FRIEND_RESP_MSG;
+    js["account"] = email;
+    js["accept"] = (first == 'y');
+    string buffer = js.dump();
+
+    if (!sendFrame(clientfd, buffer))
+    {
+        cerr << "send resp msg error -> " << buffer << endl;
+    }
+}
+// "delfriend" command handler  email或用户名
+void delfriend(int clientfd, string str)
+{
+    const string account = str;
+    if (account.empty())
+    {
+        cerr << "delfriend command invalid! format: delfriend:email或用户名" << endl;
+        return;
+    }
+
+    json js;
+    js["msgid"] = DEL_FRIEND_MSG;
+    js["id"] = g_currentUser.getId();
+    js["account"] = account;
+    string buffer = js.dump();
+
+    if (!sendFrame(clientfd, buffer))
+    {
+        cerr << "send delfriend msg error -> " << buffer << endl;
     }
 }
 // "chat" command handler

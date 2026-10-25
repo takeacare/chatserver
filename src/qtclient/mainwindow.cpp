@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenuBar>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -114,6 +115,10 @@ MainWindow::MainWindow(ChatClient *client, QWidget *parent)
 
     connect(_client, &ChatClient::loginResult, this, &MainWindow::onLoginResult);
     connect(_client, &ChatClient::addFriendResult, this, &MainWindow::onAddFriendResult);
+    connect(_client, &ChatClient::friendRequest, this, &MainWindow::onFriendRequest);
+    connect(_client, &ChatClient::friendRespResult, this, &MainWindow::onFriendRespResult);
+    connect(_client, &ChatClient::friendRemoved, this, &MainWindow::onFriendRemoved);
+    connect(_client, &ChatClient::delFriendResult, this, &MainWindow::onDelFriendResult);
     connect(_client, &ChatClient::addGroupResult, this, &MainWindow::onAddGroupResult);
     connect(_client, &ChatClient::createGroupResult, this, &MainWindow::onCreateGroupResult);
     connect(_client, &ChatClient::chatSendResult, this, &MainWindow::onChatSendResult);
@@ -289,6 +294,9 @@ void MainWindow::buildUi()
     connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
 
     connect(_friendList, &QListWidget::itemClicked, this, &MainWindow::onFriendClicked);
+    _friendList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(_friendList, &QListWidget::customContextMenuRequested,
+            this, &MainWindow::onFriendContextMenu);
     connect(_groupList, &QListWidget::itemClicked, this, &MainWindow::onGroupClicked);
     connect(_sendBtn, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(_inputEdit, &QLineEdit::returnPressed, this, &MainWindow::onSendClicked);
@@ -330,6 +338,7 @@ void MainWindow::resetSession()
     _sessionActive = false;
     _refreshPending = false;
     _addFriendPending = false;
+    _delFriendPending = false;
     _createGroupPending = false;
     _joinGroupPending = false;
     _addFriendBtn->setEnabled(true);
@@ -492,6 +501,23 @@ void MainWindow::applyLoginAck(const nlohmann::json &ack, bool refresh)
             {
                 const nlohmann::json m = nlohmann::json::parse(entry.get<std::string>());
                 appendIncoming(m, true);
+            }
+            catch (const std::exception &)
+            {
+            }
+        }
+    }
+
+    // 登录时补发的待处理好友请求（刷新路径不弹，避免重复弹窗）
+    if (!refresh && ack.contains("pendingrequests"))
+    {
+        for (const auto &entry : ack["pendingrequests"])
+        {
+            try
+            {
+                const nlohmann::json r = nlohmann::json::parse(entry.get<std::string>());
+                promptFriendRequest(QString::fromStdString(r.value("name", std::string())),
+                                    QString::fromStdString(r.value("email", std::string())));
             }
             catch (const std::exception &)
             {
@@ -888,11 +914,21 @@ void MainWindow::onAddFriendResult(const nlohmann::json &js)
         return;
     }
 
+    // 发起方收到的「对方已同意」通知（服务端复用 ACK 号推送，agreed=true）
+    if (js.value("agreed", false) && js.value("errno", 1) == 0)
+    {
+        const QString name = QString::fromStdString(js.value("name", std::string()));
+        setStatusText(QStringLiteral("%1 已同意你的好友请求，正在刷新列表...").arg(name),
+                      QStringLiteral("ok"));
+        onRefreshLists();
+        return;
+    }
+
     const int errno_ = js.value("errno", 1);
     if (errno_ == 0)
     {
         const QString name = QString::fromStdString(js.value("name", std::string()));
-        setStatusText(QStringLiteral("已添加好友：%1，刷新列表后可见").arg(name),
+        setStatusText(QStringLiteral("好友请求已发送给 %1，等待对方同意").arg(name),
                       QStringLiteral("ok"));
     }
     else if (errno_ == 1)
@@ -903,12 +939,172 @@ void MainWindow::onAddFriendResult(const nlohmann::json &js)
     {
         setStatusText(QStringLiteral("不能添加自己为好友"), QStringLiteral("error"));
     }
+    else if (errno_ == 4)
+    {
+        setStatusText(QStringLiteral("你们已经是好友了"), QStringLiteral("info"));
+    }
+    else if (errno_ == 5)
+    {
+        setStatusText(QStringLiteral("好友请求已发送，请耐心等待对方处理"), QStringLiteral("info"));
+    }
     else
     {
         setStatusText(QStringLiteral("添加好友失败：%1")
                           .arg(QString::fromStdString(js.value("errmsg", std::string()))),
                       QStringLiteral("error"));
     }
+}
+
+// 弹出好友请求确认框：同意/拒绝（name 可能为空时回退显示邮箱）
+void MainWindow::promptFriendRequest(const QString &name, const QString &email)
+{
+    if (!_sessionActive || email.isEmpty())
+    {
+        return;
+    }
+
+    const QString who = name.isEmpty() ? email : QStringLiteral("%1 (%2)").arg(name, email);
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, QStringLiteral("好友请求"),
+        QStringLiteral("%1 请求添加你为好友，是否同意？").arg(who),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+    _client->sendAddFriendResp(email, choice == QMessageBox::Yes);
+}
+
+void MainWindow::onFriendRequest(const nlohmann::json &js)
+{
+    if (!_sessionActive)
+    {
+        return;
+    }
+
+    promptFriendRequest(QString::fromStdString(js.value("name", std::string())),
+                        QString::fromStdString(js.value("email", std::string())));
+}
+
+void MainWindow::onFriendRespResult(const nlohmann::json &js)
+{
+    if (!_sessionActive)
+    {
+        return;
+    }
+
+    const int errno_ = js.value("errno", 1);
+    if (errno_ == 0)
+    {
+        const bool agreed = js.value("agreed", false);
+        setStatusText(agreed ? QStringLiteral("已同意好友请求，你们现在是好友了")
+                             : QStringLiteral("已拒绝该好友请求"),
+                      QStringLiteral("ok"));
+        if (agreed)
+        {
+            // 同意方本地列表不会自动出现新好友，刷新一次拉取最新数据
+            onRefreshLists();
+        }
+    }
+    else
+    {
+        setStatusText(QStringLiteral("处理好友请求失败：%1")
+                          .arg(QString::fromStdString(js.value("errmsg", std::string()))),
+                      QStringLiteral("error"));
+    }
+}
+
+void MainWindow::onFriendRemoved(const nlohmann::json &js)
+{
+    if (!_sessionActive)
+    {
+        return;
+    }
+
+    const QString name = QString::fromStdString(js.value("name", std::string()));
+    setStatusText(QStringLiteral("%1 已将你从好友列表移除").arg(name), QStringLiteral("info"));
+    onRefreshLists();
+}
+
+void MainWindow::onDelFriendResult(const nlohmann::json &js)
+{
+    _delFriendPending = false;
+
+    if (!_sessionActive)
+    {
+        return;
+    }
+
+    const int errno_ = js.value("errno", 1);
+    if (errno_ == 0)
+    {
+        const QString name = QString::fromStdString(js.value("name", std::string()));
+        setStatusText(QStringLiteral("已删除好友 %1，正在刷新列表...").arg(name),
+                      QStringLiteral("ok"));
+        onRefreshLists();
+    }
+    else if (errno_ == 1)
+    {
+        setStatusText(QStringLiteral("删除好友失败：未找到该用户"), QStringLiteral("error"));
+    }
+    else if (errno_ == 2)
+    {
+        setStatusText(QStringLiteral("删除好友失败：你和对方不是好友"), QStringLiteral("error"));
+    }
+    else
+    {
+        setStatusText(QStringLiteral("删除好友失败：%1")
+                          .arg(QString::fromStdString(js.value("errmsg", std::string()))),
+                      QStringLiteral("error"));
+    }
+}
+
+// 好友列表右键菜单：删除好友
+void MainWindow::onFriendContextMenu(const QPoint &pos)
+{
+    QListWidgetItem *item = _friendList->itemAt(pos);
+    if (item == nullptr || !_sessionActive || _delFriendPending)
+    {
+        return;
+    }
+
+    // 按条目 id 回查好友档案；陌生人（非好友会话）不提供删除入口
+    const int id = item->data(Qt::UserRole).toInt();
+    FriendEntry entry;
+    bool found = false;
+    for (const auto &f : _friends)
+    {
+        if (f.id == id)
+        {
+            entry = f;
+            found = true;
+            break;
+        }
+    }
+    if (!found || entry.stranger || entry.email.isEmpty())
+    {
+        return;
+    }
+
+    QMenu menu(_friendList);
+    QAction *delAction = menu.addAction(QStringLiteral("删除好友"));
+    QAction *chosen = menu.exec(_friendList->mapToGlobal(pos));
+    if (chosen != delAction)
+    {
+        return;
+    }
+
+    const QString who = entry.name.isEmpty() ? entry.email
+                                             : QStringLiteral("%1 (%2)").arg(entry.name, entry.email);
+    const QMessageBox::StandardButton confirm = QMessageBox::question(
+        this, QStringLiteral("删除好友"),
+        QStringLiteral("确定删除好友 %1 吗？双方好友关系将解除。").arg(who),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (confirm != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    _delFriendPending = true;
+    _client->sendDelFriend(_myId, entry.email);
+    setStatusText(QStringLiteral("正在删除好友 %1 ...").arg(entry.name), QStringLiteral("idle"));
 }
 
 void MainWindow::onCreateGroup()
@@ -1134,7 +1330,7 @@ void MainWindow::onChatSendResult(const nlohmann::json &js)
 
 void MainWindow::onRefreshLists()
 {
-    if (!_sessionActive || _myId <= 0)
+    if (!_sessionActive || _myId <= 0 || _refreshPending)
     {
         return;
     }

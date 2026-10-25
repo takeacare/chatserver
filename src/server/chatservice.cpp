@@ -64,6 +64,8 @@ ChatService::ChatService()
     _msgHandlerMap.insert({REG_MSG, std::bind(&ChatService::reg, this, _1, _2, _3)});
     _msgHandlerMap.insert({ONE_CHAT_MSG, std::bind(&ChatService::oneChat, this, _1, _2, _3)});
     _msgHandlerMap.insert({ADD_FRIEND_MSG, std::bind(&ChatService::addFriend, this, _1, _2, _3)});
+    _msgHandlerMap.insert({ADD_FRIEND_RESP_MSG, std::bind(&ChatService::addFriendResp, this, _1, _2, _3)});
+    _msgHandlerMap.insert({DEL_FRIEND_MSG, std::bind(&ChatService::delFriend, this, _1, _2, _3)});
 
     // 群组业务管理相关事件处理回调注册
     _msgHandlerMap.insert({CREATE_GROUP_MSG, std::bind(&ChatService::createGroup, this, _1, _2, _3)});
@@ -263,6 +265,13 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
         response["groups"] = groupV;
     }
 
+    // 下发给该用户的待处理好友请求（登录时补发，离线收到的请求不会丢失）
+    vector<string> pendingReqs = _friendReqModel.queryPending(id);
+    if (!pendingReqs.empty())
+    {
+        response["pendingrequests"] = pendingReqs;
+    }
+
     sendJson(conn, response);
 }
 
@@ -418,8 +427,13 @@ void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time
         }
     }
 
-    // 查询toid是否在线
+    // 查询目标用户：不存在则回执失败，禁止把消息静默存进离线表
     User user = _userModel.query(toid);
+    if (user.getId() == -1)
+    {
+        sendChatAck(conn, 1, "target user not found");
+        return;
+    }
     if (user.getState() == "online")
     {
         _redis.publish(toid, js.dump());
@@ -431,6 +445,7 @@ void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time
 }
 
 // 添加好友业务 msgid account（account 为邮箱或用户名）
+// 请求制：发起方写入待处理请求表并通知接收方，接收方同意后双向建立好友关系
 void ChatService::addFriend(const TcpConnectionPtr &conn, json &js, Timestamp time)
 {
     int userid = -1;
@@ -476,9 +491,23 @@ void ChatService::addFriend(const TcpConnectionPtr &conn, json &js, Timestamp ti
         reply(2, "can not add yourself as friend");
         return;
     }
+    if (_friendModel.isFriend(userid, target.getId()))
+    {
+        reply(4, "you are already friends");
+        return;
+    }
+    if (_friendReqModel.existsPending(userid, target.getId()))
+    {
+        reply(5, "request already sent, waiting for approval");
+        return;
+    }
 
-    // 存储好友信息
-    _friendModel.insert(userid, target.getId());
+    // 记录待处理请求（曾被拒绝可重新发起）
+    if (!_friendReqModel.upsert(userid, target.getId()))
+    {
+        reply(1, "add friend failed");
+        return;
+    }
 
     json response;
     response["msgid"] = ADD_FRIEND_MSG_ACK;
@@ -486,6 +515,180 @@ void ChatService::addFriend(const TcpConnectionPtr &conn, json &js, Timestamp ti
     response["name"] = target.getName();
     response["email"] = target.getEmail();
     sendJson(conn, response);
+
+    // 接收方在线则实时推送请求通知（下行复用 ADD_FRIEND_MSG 号）
+    User me = _userModel.query(userid);
+    json notify;
+    notify["msgid"] = ADD_FRIEND_MSG;
+    notify["userid"] = userid;
+    notify["name"] = me.getName();
+    notify["email"] = me.getEmail();
+    notifyOnlineUser(target.getId(), notify);
+}
+
+// 处理好友请求 msgid account（发起方邮箱） accept（true 同意 / false 拒绝）
+void ChatService::addFriendResp(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int receiver = -1;
+    if (!getAuthUserId(conn, receiver))
+    {
+        LOG_ERROR << "addFriendResp rejected: unauthenticated connection";
+        return;
+    }
+
+    auto ack = [&](int errno_, const string &msg, bool agreed) {
+        json response;
+        response["msgid"] = ADD_FRIEND_RESP_MSG_ACK;
+        response["errno"] = errno_;
+        response["errmsg"] = msg;
+        if (errno_ == 0)
+        {
+            response["agreed"] = agreed;
+        }
+        sendJson(conn, response);
+    };
+
+    // 响应用发起方邮箱定位，避免同名用户歧义
+    const string account = jsonString(js, "account");
+    User requester;
+    if (isValidEmail(account))
+    {
+        requester = _userModel.queryByEmail(account);
+    }
+    if (requester.getId() == -1)
+    {
+        ack(1, "request not found", false);
+        return;
+    }
+
+    const bool accept = js.contains("accept") && js["accept"].is_boolean() && js["accept"].get<bool>();
+
+    // 无待处理请求：重复处理或请求已撤销
+    if (!_friendReqModel.existsPending(requester.getId(), receiver))
+    {
+        ack(1, "no pending request from this user", false);
+        return;
+    }
+
+    if (accept)
+    {
+        // 先建立好友关系再删请求：落库失败时保留请求，接收方可重试
+        const auto result = _friendModel.addFriend(requester.getId(), receiver);
+        if (result == FriendModel::AddResult::FAILED)
+        {
+            ack(1, "add friend failed", false);
+            return;
+        }
+        _friendReqModel.remove(requester.getId(), receiver);
+    }
+    else if (!_friendReqModel.remove(requester.getId(), receiver))
+    {
+        ack(1, "no pending request from this user", false);
+        return;
+    }
+
+    ack(0, accept ? "accepted" : "declined", accept);
+
+    // 同意后实时通知发起方（下行复用 ADD_FRIEND_MSG_ACK 号 + agreed 标记）
+    if (accept)
+    {
+        User me = _userModel.query(receiver);
+        json notify;
+        notify["msgid"] = ADD_FRIEND_MSG_ACK;
+        notify["errno"] = 0;
+        notify["agreed"] = true;
+        notify["name"] = me.getName();
+        notify["email"] = me.getEmail();
+        notifyOnlineUser(requester.getId(), notify);
+    }
+}
+
+// 删除好友业务 msgid account（account 为邮箱或用户名）；被移除方收到 DEL_FRIEND_MSG 下行通知
+void ChatService::delFriend(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int userid = -1;
+    if (!getAuthUserId(conn, userid))
+    {
+        LOG_ERROR << "delFriend rejected: unauthenticated connection";
+        return;
+    }
+
+    auto ack = [&](int errno_, const string &msg) {
+        json response;
+        response["msgid"] = DEL_FRIEND_MSG_ACK;
+        response["errno"] = errno_;
+        response["errmsg"] = msg;
+        sendJson(conn, response);
+    };
+
+    const string account = jsonString(js, "account");
+    if (account.empty())
+    {
+        ack(3, "email or username can not be empty");
+        return;
+    }
+
+    User target;
+    if (isValidEmail(account))
+    {
+        target = _userModel.queryByEmail(account);
+    }
+    else
+    {
+        target = _userModel.queryByName(account);
+    }
+
+    if (target.getId() == -1)
+    {
+        ack(1, "user not found");
+        return;
+    }
+    if (!_friendModel.isFriend(userid, target.getId()))
+    {
+        ack(2, "you are not friends with this user");
+        return;
+    }
+
+    if (!_friendModel.removeFriend(userid, target.getId()))
+    {
+        ack(1, "delete friend failed");
+        return;
+    }
+
+    json response;
+    response["msgid"] = DEL_FRIEND_MSG_ACK;
+    response["errno"] = 0;
+    response["name"] = target.getName();
+    response["email"] = target.getEmail();
+    sendJson(conn, response);
+
+    // 通知被移除方（下行复用 DEL_FRIEND_MSG 号）
+    User me = _userModel.query(userid);
+    json notify;
+    notify["msgid"] = DEL_FRIEND_MSG;
+    notify["name"] = me.getName();
+    notify["email"] = me.getEmail();
+    notifyOnlineUser(target.getId(), notify);
+}
+
+// 目标用户在线则推送消息：本机直接下发，跨服务器经redis转发；离线则不推送
+void ChatService::notifyOnlineUser(int targetid, const json &js)
+{
+    {
+        lock_guard<mutex> lock(_connMutex);
+        auto it = _userConnMap.find(targetid);
+        if (it != _userConnMap.end())
+        {
+            sendJson(it->second, js);
+            return;
+        }
+    }
+
+    User user = _userModel.query(targetid);
+    if (user.getState() == "online")
+    {
+        _redis.publish(targetid, js.dump());
+    }
 }
 
 // 创建群组业务 msgid groupname [groupdesc]

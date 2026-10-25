@@ -26,6 +26,10 @@ public:
     void sendOneChat(int id, const QString &name, int toid, const QString &msg, const QString &time);
     void sendGroupChat(int id, const QString &name, int groupid, const QString &msg, const QString &time);
     void sendAddFriend(int id, const QString &account);
+    // 处理收到的好友请求：account 为发起方邮箱，accept=true 同意 / false 拒绝
+    void sendAddFriendResp(const QString &account, bool accept);
+    // 删除好友：account 为对方邮箱或用户名
+    void sendDelFriend(int id, const QString &account);
     void sendCreateGroup(int id, const QString &groupname, const QString &groupdesc);
     void sendAddGroup(int id, const QString &groupname, int candidate = -1);
     void sendLoginout(int id);
@@ -37,6 +41,14 @@ signals:
     void loginResult(const nlohmann::json &js);
     void registerResult(const nlohmann::json &js);
     void addFriendResult(const nlohmann::json &js);
+    // 收到好友请求通知（ADD_FRIEND_MSG 下行）：{name, email}
+    void friendRequest(const nlohmann::json &js);
+    // 好友请求处理结果（ADD_FRIEND_RESP_MSG_ACK）：发起方收到同意/拒绝通知
+    void friendRespResult(const nlohmann::json &js);
+    // 被好友移除通知（DEL_FRIEND_MSG 下行）：{name, email}
+    void friendRemoved(const nlohmann::json &js);
+    // 删除好友结果（DEL_FRIEND_MSG_ACK）
+    void delFriendResult(const nlohmann::json &js);
     void addGroupResult(const nlohmann::json &js);
     void createGroupResult(const nlohmann::json &js);
     // 私聊/群聊发送失败响应（CHAT_SEND_ACK，仅失败时到达）

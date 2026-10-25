@@ -34,10 +34,11 @@ public:
     // 向redis指定的通道channel发布消息
     bool publish(int channel, string message);
 
-    // 订阅通道：阻塞直到redis确认订阅成功（或超时）
+    // 订阅通道：阻塞直到redis确认订阅成功（或超时），保证通道就绪后再上线
     bool subscribe(int channel);
 
-    // 取消订阅：阻塞直到redis确认取消（或超时）；未订阅的通道直接返回成功
+    // 取消订阅：提交后立即返回（发即忘）；退订确认前残余到达的通道消息会走离线存储兜底，
+    // 不等待确认以避免阻塞IO线程（业务线程同步等待会与其它连接上的登录产生竞争）
     bool unsubscribe(int channel);
 
     // 在独立线程中监听订阅通道消息与订阅命令确认

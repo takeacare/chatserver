@@ -46,6 +46,11 @@ private slots:
     void onLogout();
     void onLoginResult(const nlohmann::json &js);
     void onAddFriendResult(const nlohmann::json &js);
+    void onFriendRequest(const nlohmann::json &js);
+    void onFriendRespResult(const nlohmann::json &js);
+    void onFriendRemoved(const nlohmann::json &js);
+    void onDelFriendResult(const nlohmann::json &js);
+    void onFriendContextMenu(const QPoint &pos);
     void onAddGroupResult(const nlohmann::json &js);
     void onCreateGroupResult(const nlohmann::json &js);
     void onChatSendResult(const nlohmann::json &js);
@@ -85,6 +90,8 @@ private:
     void addGroupItem(int id, const QString &name, const QString &desc,
                       const QVector<MemberInfo> &members, bool stranger);
     void updateActiveHeader();
+    // 弹出好友请求确认框（同意/拒绝），登录补发与实时通知共用
+    void promptFriendRequest(const QString &name, const QString &email);
     // 状态栏文本与语义色（idle / ok / info / error），样式由主题统一控制
     void setStatusText(const QString &text, const QString &state);
     QString nowText() const;
@@ -100,6 +107,7 @@ private:
     bool _refreshPending = false;
     // 防重复点击：请求在途时忽略同类按钮点击
     bool _addFriendPending = false;
+    bool _delFriendPending = false;
     bool _createGroupPending = false;
     bool _joinGroupPending = false;
 

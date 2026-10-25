@@ -119,7 +119,11 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 | QTcpSocket | `errorOccurred` | ChatClient | `onSocketError` → `socketError(QString)` |
 | ChatClient | `loginResult` | LoginDialog | 登录成功发 `loggedIn(ack, email, password)` 或显示错误 |
 | ChatClient | `registerResult` | LoginDialog | 注册成功提示并回填登录页邮箱 |
-| ChatClient | `addFriendResult` | MainWindow | 添加好友结果反馈（未找到 / 不能加自己 / 成功） |
+| ChatClient | `addFriendResult` | MainWindow | 好友请求发送结果反馈（未找到 / 不能加自己 / 已是好友 / 已有待处理请求 / 对方已同意） |
+| ChatClient | `friendRequest` | MainWindow | 收到实时好友请求（id 7 下行），弹窗选择同意/拒绝 |
+| ChatClient | `friendRespResult` | MainWindow | 同意/拒绝好友请求的处理结果反馈 |
+| ChatClient | `friendRemoved` | MainWindow | 被对方删除好友的通知（id 17 下行），自动刷新列表 |
+| ChatClient | `delFriendResult` | MainWindow | 删除好友结果反馈，成功后自动刷新列表 |
 | ChatClient | `addGroupResult` | MainWindow | 加群结果反馈，同名群返回候选列表供选择 |
 | ChatClient | `loginResult` | MainWindow | 刷新列表时的静默重登 ACK |
 | ChatClient | `chatMessage` | MainWindow | `appendIncoming` 按会话路由 |
@@ -128,6 +132,7 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 | MainWindow | `loggedOut` | main.cpp lambda | 隐藏主窗口，`prepareForLogin` 并显示登录框 |
 | QPushButton(发送) / QLineEdit(returnPressed) | `clicked` | MainWindow | `onSendClicked` |
 | QListWidget(好友/群组) | `itemClicked` | MainWindow | 切换会话 |
+| QListWidget(好友) | `customContextMenuRequested` | MainWindow | `onFriendContextMenu`：右键删除好友（陌生人/非好友无入口） |
 | 菜单 QAction | `triggered` | MainWindow | `onLogout` |
 
 ## 6. 协议映射
@@ -140,12 +145,16 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 | 注册 | 4 | `name, email, password` | 5 `REG_MSG_ACK`（errno/id/email） |
 | 注销 | 3 | `id`（服务端以连接上下文为准） | 无 ACK（服务端不关闭连接） |
 | 私聊 | 6 | `id, name, toid` 或 `toaccount, msg, time` | 6 转发给对端；失败时下行 13 `CHAT_SEND_ACK`（errno 1 目标不存在 / 2 内容为空或超长 / 3 非群成员） |
-| 加好友 | 7 | `id, account`（邮箱或用户名） | 11 `ADD_FRIEND_MSG_ACK`（errno/name/email） |
+| 加好友（发请求） | 7 | `id, account`（邮箱或用户名） | 11 `ADD_FRIEND_MSG_ACK`（errno/name/email；errno 0 请求已发送 / 1 未找到 / 2 加自己 / 3 账号为空 / 4 已是好友 / 5 已有待处理请求）；请求制：对方同意后双方才成为好友 |
+| 处理好友请求 | 15 | `account`（发起方邮箱）, `accept`（true 同意 / false 拒绝） | 16 `ADD_FRIEND_RESP_MSG_ACK`（errno/errmsg/agreed；errno 1 无对应待处理请求）；同意后实时通知发起方（下行复用 11 + `agreed:true`），拒绝后发起方可重新发起 |
+| 删除好友 | 17 | `id, account`（邮箱或用户名） | 18 `DEL_FRIEND_MSG_ACK`（errno/name/email；errno 0 成功（双向解除）/ 1 未找到 / 2 非好友 / 3 账号为空）；被移除方在线时实时收到下行 17 通知（name/email） |
 | 创建群 | 8 | `id, groupname, groupdesc` | 14 `CREATE_GROUP_MSG_ACK`（errno/groupname） |
 | 加群 | 9 | `id, groupname`（可选 `candidate` 为同名群序号） | 12 `ADD_GROUP_MSG_ACK`（errno/groupname/groups） |
 | 群聊 | 10 | `id, name, groupid` 或 `groupname, msg, time` | 10 转发给群成员；失败时下行 13 `CHAT_SEND_ACK` |
 
-说明：客户端界面不展示、也不要求用户输入用户 ID 或群 ID；加好友使用邮箱或用户名，加群使用群名称，同名群由服务端返回候选列表、客户端按序号选择。`friends`、`groups`（含 `users`）、`offlinemsg` 均为 **JSON 字符串数组**，客户端逐项 `json::parse` 后使用。
+说明：客户端界面不展示、也不要求用户输入用户 ID 或群 ID；加好友使用邮箱或用户名，加群使用群名称，同名群由服务端返回候选列表、客户端按序号选择。`friends`、`groups`（含 `users`）、`offlinemsg`、`pendingrequests` 均为 **JSON 字符串数组**，客户端逐项 `json::parse` 后使用。
+
+好友请求为**请求-审批制**：发起后写入 `friend_request` 表（userid+friendid 联合主键），接收方在线时实时弹窗、离线则登录时通过 `pendingrequests` 补发；同意即双向落库并删除请求，拒绝仅删除请求（可重新发起）。登录 ACK 新增 `pendingrequests` 字段（`[{userid,name,email}]`），仅存在待处理请求时携带。GUI 在好友列表右键菜单提供「删除好友」。
 
 ### 6.1 安全与账号规则
 
@@ -157,6 +166,7 @@ Item（透明背景，圆角与描边由外层 MessageCard 提供）
 
 ### 6.2 运行配置
 
+- 数据库表结构见 `docs/schema.sql`，新环境执行 `mysql -uroot -p < docs/schema.sql` 初始化（含 `friend_request` 表）。
 - 服务端从 `config/server.conf`（或工作目录 `server.conf`）读取 `db_host/db_port/db_user/db_password/db_name/db_pool_size/redis_host/redis_port`；配置文件缺失时服务端拒绝启动。该文件含数据库凭据，已加入 `.gitignore`，禁止入库。
 - `SIGINT`/`SIGTERM` 退出时自动将在线用户重置为 offline，避免异常退出后状态残留。
 
@@ -182,7 +192,8 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/usr
 
 ## 8. 已知限制
 
-- 服务端对加好友 / 建群 / 加群 / 聊天/注销均无 ACK，界面只反馈“请求已提交”，需点「刷新列表」才能看到结果。
-- 刷新列表通过同一连接上顺序发送 `LOGINOUT` + `LOGIN` 实现（已实测服务端不关闭连接、且能正确返回新的好友/群/离线数据）；刷新会重新下发离线消息。
+- 登录/注册/加好友/处理好友请求/删好友/建群/加群均有结果 ACK（注销无 ACK，私聊/群聊仅失败时返回 `CHAT_SEND_ACK`）；好友请求的同意与删除操作成功后客户端会自动刷新列表。
+- 刷新列表通过同一连接上顺序发送 `LOGINOUT` + `LOGIN` 实现（已实测服务端不关闭连接、且能正确返回新的好友/群/离线数据）；离线消息在登录时已事务性取走，刷新不会重复下发，刷新也不会重复弹出待处理好友请求。
+- 好友在线状态只在登录/刷新时取快照，之后上下线不会实时推送。
 - 聊天记录仅保存在内存中，注销或退出即丢失；会话历史按会话（好友/群）隔离。
 - 若收到非好友的私聊消息，会在好友列表生成「陌生人」临时条目（仅本次会话有效）。

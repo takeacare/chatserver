@@ -157,7 +157,7 @@ bool Redis::subscribe(int channel)
                                   [&] { return _subscribed.count(channel) > 0; });
 }
 
-// 向redis指定的通道unsubscribe取消订阅消息
+// 向redis指定的通道unsubscribe取消订阅消息（发即忘，不等待确认）
 bool Redis::unsubscribe(int channel)
 {
     if (_subcribe_context == nullptr || !_readerAlive)
@@ -165,7 +165,7 @@ bool Redis::unsubscribe(int channel)
         return false;
     }
 
-    // 未订阅的通道无需发送命令，直接视为已取消
+    // 未订阅的通道无需发送命令
     {
         lock_guard<mutex> lock(_subscribedMutex);
         if (_subscribed.count(channel) == 0)
@@ -179,15 +179,7 @@ bool Redis::unsubscribe(int channel)
         _pendingSubs.push_back({channel, false});
     }
     const char wake = 'w';
-    if (write(_wakeWriteFd, &wake, 1) != 1)
-    {
-        return false;
-    }
-
-    // 阻塞等待redis的unsubscribe确认回包
-    unique_lock<mutex> lock(_subscribedMutex);
-    return _subscribedCv.wait_for(lock, chrono::milliseconds(SUB_CONFIRM_TIMEOUT_MS),
-                                  [&] { return _subscribed.count(channel) == 0; });
+    return write(_wakeWriteFd, &wake, 1) == 1;
 }
 
 // 由读线程在订阅上下文上发送订阅命令并冲刷缓冲区

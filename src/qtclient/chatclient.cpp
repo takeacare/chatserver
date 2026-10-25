@@ -86,6 +86,24 @@ void ChatClient::sendAddFriend(int id, const QString &account)
     sendJson(js);
 }
 
+void ChatClient::sendAddFriendResp(const QString &account, bool accept)
+{
+    nlohmann::json js;
+    js["msgid"] = ADD_FRIEND_RESP_MSG;
+    js["account"] = account.toStdString();
+    js["accept"] = accept;
+    sendJson(js);
+}
+
+void ChatClient::sendDelFriend(int id, const QString &account)
+{
+    nlohmann::json js;
+    js["msgid"] = DEL_FRIEND_MSG;
+    js["id"] = id;
+    js["account"] = account.toStdString();
+    sendJson(js);
+}
+
 void ChatClient::sendCreateGroup(int id, const QString &groupname, const QString &groupdesc)
 {
     nlohmann::json js;
@@ -186,6 +204,20 @@ void ChatClient::processPayload(const QByteArray &payload)
         break;
     case ADD_FRIEND_MSG_ACK:
         emit addFriendResult(js);
+        break;
+    case ADD_FRIEND_MSG:
+        // 下行复用：好友请求通知（服务端只在该号上推送此场景）
+        emit friendRequest(js);
+        break;
+    case ADD_FRIEND_RESP_MSG_ACK:
+        emit friendRespResult(js);
+        break;
+    case DEL_FRIEND_MSG:
+        // 下行复用：被好友移除通知
+        emit friendRemoved(js);
+        break;
+    case DEL_FRIEND_MSG_ACK:
+        emit delFriendResult(js);
         break;
     case ADD_GROUP_MSG_ACK:
         emit addGroupResult(js);

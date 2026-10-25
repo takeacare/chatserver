@@ -26,6 +26,10 @@ enum EnMsgType
     ADD_GROUP_MSG_ACK, // 加入群组响应
     CHAT_SEND_ACK, // 私聊/群聊发送失败响应（仅失败时由服务端返回）
     CREATE_GROUP_MSG_ACK, // 创建群组响应
+    ADD_FRIEND_RESP_MSG, // 处理好友请求（同意/拒绝，请求接收方发出）
+    ADD_FRIEND_RESP_MSG_ACK, // 好友请求处理结果响应
+    DEL_FRIEND_MSG, // 删除好友（下行同号为「被移除」通知）
+    DEL_FRIEND_MSG_ACK, // 删除好友结果响应
 };
 
 // 邮箱格式校验：客户端与服务端共用，保证双方规则一致

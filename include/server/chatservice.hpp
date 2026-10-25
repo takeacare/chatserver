@@ -14,6 +14,7 @@ using namespace muduo::net;
 #include "redis.hpp"
 #include "groupmodel.hpp"
 #include "friendmodel.hpp"
+#include "friendrequestmodel.hpp"
 #include "usermodel.hpp"
 #include "offlinemessagemodel.hpp"
 #include "json.hpp"
@@ -53,6 +54,12 @@ public:
     // 从redis消息队列中获取订阅的消息
     void handleRedisSubscribeMessage(int, string);
 
+    // 处理好友请求（同意/拒绝）
+    void addFriendResp(const TcpConnectionPtr &conn, json &js, Timestamp time);
+
+    // 删除好友
+    void delFriend(const TcpConnectionPtr &conn, json &js, Timestamp time);
+
 private:
     ChatService();
 
@@ -67,6 +74,9 @@ private:
 
     // 注销公共逻辑：移除连接映射、取消订阅、更新离线状态
     void doLogout(const TcpConnectionPtr &conn, int userid);
+
+    // 目标用户在线则推送消息：本机直接下发，跨服务器经redis转发；离线则不推送
+    void notifyOnlineUser(int targetid, const json &js);
 
     // 存储消息id和其对应的业务处理方法
     unordered_map<int, MsgHandler> _msgHandlerMap;
@@ -90,6 +100,7 @@ private:
     UserModel _userModel;
     OfflineMsgModel _offlineMsgModel;
     FriendModel _friendModel;
+    FriendRequestModel _friendReqModel;
     GroupModel _groupModel;
 
     // redis操作对象
